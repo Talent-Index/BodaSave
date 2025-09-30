@@ -51,7 +51,8 @@
   },
   "devDependencies": {
     "husky": "~9.1.6",
-    "lint-staged": "~13.2.2"
+    "lint-staged": "~13.2.2",
+    "vercel": "latest"
   },
   "packageManager": "yarn@3.2.3",
   "engines": {

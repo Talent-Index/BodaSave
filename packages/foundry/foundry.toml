@@ -4,6 +4,8 @@ out = 'out'
 libs = ['lib', 'node_modules']
 fs_permissions = [{ access = "read-write", path = "./"}]
 
+remappings = ['@openzeppelin/contracts=lib/openzeppelin-contracts/contracts']
+
 
 [rpc_endpoints]
 default_network = "http://127.0.0.1:8545"
