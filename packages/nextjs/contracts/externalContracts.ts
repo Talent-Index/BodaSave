@@ -13,10 +13,6 @@ const externalContracts = {
           "stateMutability": "nonpayable",
           "type": "constructor"
         },
-        { "inputs": [], "name": "ERC20InvalidApprover", "type": "error" },
-        { "inputs": [], "name": "ERC20InvalidReceiver", "type": "error" },
-        { "inputs": [], "name": "ERC20InvalidSender", "type": "error" },
-        { "inputs": [], "name": "ERC20InvalidSpender", "type": "error" },
         {
           "inputs": [
             { "internalType": "address", "name": "spender", "type": "address" },
@@ -36,6 +32,48 @@ const externalContracts = {
           "type": "error"
         },
         {
+          "inputs": [
+            { "internalType": "address", "name": "approver", "type": "address" }
+          ],
+          "name": "ERC20InvalidApprover",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "receiver", "type": "address" }
+          ],
+          "name": "ERC20InvalidReceiver",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "sender", "type": "address" }
+          ],
+          "name": "ERC20InvalidSender",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "spender", "type": "address" }
+          ],
+          "name": "ERC20InvalidSpender",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "owner", "type": "address" }
+          ],
+          "name": "OwnableInvalidOwner",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "account", "type": "address" }
+          ],
+          "name": "OwnableUnauthorizedAccount",
+          "type": "error"
+        },
+        {
           "anonymous": false,
           "inputs": [
             { "indexed": true, "internalType": "address", "name": "owner", "type": "address" },
@@ -43,6 +81,15 @@ const externalContracts = {
             { "indexed": false, "internalType": "uint256", "name": "value", "type": "uint256" }
           ],
           "name": "Approval",
+          "type": "event"
+        },
+        {
+          "anonymous": false,
+          "inputs": [
+            { "indexed": true, "internalType": "address", "name": "previousOwner", "type": "address" },
+            { "indexed": true, "internalType": "address", "name": "newOwner", "type": "address" }
+          ],
+          "name": "OwnershipTransferred",
           "type": "event"
         },
         {
@@ -61,7 +108,9 @@ const externalContracts = {
             { "internalType": "address", "name": "spender", "type": "address" }
           ],
           "name": "allowance",
-          "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+          "outputs": [
+            { "internalType": "uint256", "name": "", "type": "uint256" }
+          ],
           "stateMutability": "view",
           "type": "function"
         },
@@ -71,46 +120,36 @@ const externalContracts = {
             { "internalType": "uint256", "name": "value", "type": "uint256" }
           ],
           "name": "approve",
-          "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+          "outputs": [
+            { "internalType": "bool", "name": "", "type": "bool" }
+          ],
           "stateMutability": "nonpayable",
           "type": "function"
         },
         {
-          "inputs": [{ "internalType": "address", "name": "account", "type": "address" }],
+          "inputs": [
+            { "internalType": "address", "name": "account", "type": "address" }
+          ],
           "name": "balanceOf",
-          "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+          "outputs": [
+            { "internalType": "uint256", "name": "", "type": "uint256" }
+          ],
           "stateMutability": "view",
           "type": "function"
         },
         {
           "inputs": [],
           "name": "decimals",
-          "outputs": [{ "internalType": "uint8", "name": "", "type": "uint8" }],
-          "stateMutability": "view",
+          "outputs": [
+            { "internalType": "uint8", "name": "", "type": "uint8" }
+          ],
+          "stateMutability": "pure",
           "type": "function"
         },
         {
           "inputs": [
-            { "internalType": "address", "name": "spender", "type": "address" },
-            { "internalType": "uint256", "name": "subtractedValue", "type": "uint256" }
+            { "internalType": "uint256", "name": "amount", "type": "uint256" }
           ],
-          "name": "decreaseAllowance",
-          "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
-          "stateMutability": "nonpayable",
-          "type": "function"
-        },
-        {
-          "inputs": [
-            { "internalType": "address", "name": "spender", "type": "address" },
-            { "internalType": "uint256", "name": "addedValue", "type": "uint256" }
-          ],
-          "name": "increaseAllowance",
-          "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
-          "stateMutability": "nonpayable",
-          "type": "function"
-        },
-        {
-          "inputs": [{ "internalType": "uint256", "name": "amount", "type": "uint256" }],
           "name": "faucet",
           "outputs": [],
           "stateMutability": "nonpayable",
@@ -119,21 +158,53 @@ const externalContracts = {
         {
           "inputs": [],
           "name": "name",
-          "outputs": [{ "internalType": "string", "name": "", "type": "string" }],
+          "outputs": [
+            { "internalType": "string", "name": "", "type": "string" }
+          ],
           "stateMutability": "view",
           "type": "function"
         },
         {
           "inputs": [],
+          "name": "owner",
+          "outputs": [
+            { "internalType": "address", "name": "", "type": "address" }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "to", "type": "address" },
+            { "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
+          "name": "ownerMint",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [],
+          "name": "renounceOwnership",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [],
           "name": "symbol",
-          "outputs": [{ "internalType": "string", "name": "", "type": "string" }],
+          "outputs": [
+            { "internalType": "string", "name": "", "type": "string" }
+          ],
           "stateMutability": "view",
           "type": "function"
         },
         {
           "inputs": [],
           "name": "totalSupply",
-          "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+          "outputs": [
+            { "internalType": "uint256", "name": "", "type": "uint256" }
+          ],
           "stateMutability": "view",
           "type": "function"
         },
@@ -143,7 +214,9 @@ const externalContracts = {
             { "internalType": "uint256", "name": "value", "type": "uint256" }
           ],
           "name": "transfer",
-          "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+          "outputs": [
+            { "internalType": "bool", "name": "", "type": "bool" }
+          ],
           "stateMutability": "nonpayable",
           "type": "function"
         },
@@ -154,7 +227,18 @@ const externalContracts = {
             { "internalType": "uint256", "name": "value", "type": "uint256" }
           ],
           "name": "transferFrom",
-          "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+          "outputs": [
+            { "internalType": "bool", "name": "", "type": "bool" }
+          ],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "newOwner", "type": "address" }
+          ],
+          "name": "transferOwnership",
+          "outputs": [],
           "stateMutability": "nonpayable",
           "type": "function"
         }
@@ -171,8 +255,20 @@ const externalContracts = {
           "stateMutability": "nonpayable",
           "type": "constructor"
         },
-        { "inputs": [{ "internalType": "address", "name": "owner", "type": "address" }], "name": "OwnableInvalidOwner", "type": "error" },
-        { "inputs": [{ "internalType": "address", "name": "account", "type": "address" }], "name": "OwnableUnauthorizedAccount", "type": "error" },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "owner", "type": "address" }
+          ],
+          "name": "OwnableInvalidOwner",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "account", "type": "address" }
+          ],
+          "name": "OwnableUnauthorizedAccount",
+          "type": "error"
+        },
         {
           "anonymous": false,
           "inputs": [
@@ -187,6 +283,16 @@ const externalContracts = {
         {
           "anonymous": false,
           "inputs": [
+            { "indexed": true, "internalType": "address", "name": "token", "type": "address" },
+            { "indexed": true, "internalType": "address", "name": "to", "type": "address" },
+            { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
+          "name": "ERC20Recovered",
+          "type": "event"
+        },
+        {
+          "anonymous": false,
+          "inputs": [
             { "indexed": true, "internalType": "address", "name": "previousOwner", "type": "address" },
             { "indexed": true, "internalType": "address", "name": "newOwner", "type": "address" }
           ],
@@ -196,41 +302,87 @@ const externalContracts = {
         {
           "anonymous": false,
           "inputs": [
-            { "indexed": true, "internalType": "address", "name": "rider", "type": "address" },
-            { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
+            { "indexed": true, "internalType": "address", "name": "oldStablecoin", "type": "address" },
+            { "indexed": true, "internalType": "address", "name": "newStablecoin", "type": "address" }
           ],
-          "name": "SavingsWithdrawn",
+          "name": "StablecoinUpdated",
           "type": "event"
         },
         {
-          "inputs": [{ "internalType": "uint256", "name": "amount", "type": "uint256" }],
+          "anonymous": false,
+          "inputs": [
+            { "indexed": true, "internalType": "address", "name": "to", "type": "address" },
+            { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
+          "name": "WithdrawLoanPool",
+          "type": "event"
+        },
+        {
+          "anonymous": false,
+          "inputs": [
+            { "indexed": true, "internalType": "address", "name": "rider", "type": "address" },
+            { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
+          "name": "WithdrawSavings",
+          "type": "event"
+        },
+        {
+          "inputs": [
+            { "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
           "name": "deposit",
           "outputs": [],
           "stateMutability": "nonpayable",
           "type": "function"
         },
         {
-          "inputs": [{ "internalType": "address", "name": "rider", "type": "address" }],
+          "inputs": [],
+          "name": "getAvailableLoanPool",
+          "outputs": [
+            { "internalType": "uint256", "name": "", "type": "uint256" }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "rider", "type": "address" }
+          ],
           "name": "getBalances",
           "outputs": [
-            { "internalType": "uint256", "name": "savingsBalance", "type": "uint256" },
-            { "internalType": "uint256", "name": "loanPoolBalance", "type": "uint256" }
+            { "internalType": "uint256", "name": "savings", "type": "uint256" },
+            { "internalType": "uint256", "name": "loanRepaid", "type": "uint256" }
           ],
           "stateMutability": "view",
           "type": "function"
         },
         {
           "inputs": [],
-          "name": "loanPool",
-          "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+          "name": "getContractBalance",
+          "outputs": [
+            { "internalType": "uint256", "name": "", "type": "uint256" }
+          ],
           "stateMutability": "view",
           "type": "function"
         },
         {
           "inputs": [],
           "name": "owner",
-          "outputs": [{ "internalType": "address", "name": "", "type": "address" }],
+          "outputs": [
+            { "internalType": "address", "name": "", "type": "address" }
+          ],
           "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "token", "type": "address" },
+            { "internalType": "address", "name": "to", "type": "address" },
+            { "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
+          "name": "recoverERC20",
+          "outputs": [],
+          "stateMutability": "nonpayable",
           "type": "function"
         },
         {
@@ -241,28 +393,76 @@ const externalContracts = {
           "type": "function"
         },
         {
-          "inputs": [],
-          "name": "savingsPool",
-          "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+          "inputs": [
+            { "internalType": "address", "name": "", "type": "address" }
+          ],
+          "name": "riders",
+          "outputs": [
+            { "internalType": "uint256", "name": "savings", "type": "uint256" },
+            { "internalType": "uint256", "name": "loanRepaid", "type": "uint256" }
+          ],
           "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "_stablecoin", "type": "address" }
+          ],
+          "name": "setStablecoin",
+          "outputs": [],
+          "stateMutability": "nonpayable",
           "type": "function"
         },
         {
           "inputs": [],
           "name": "stablecoin",
-          "outputs": [{ "internalType": "contract IERC20", "name": "", "type": "address" }],
+          "outputs": [
+            { "internalType": "contract IERC20", "name": "", "type": "address" }
+          ],
           "stateMutability": "view",
           "type": "function"
         },
         {
-          "inputs": [{ "internalType": "address", "name": "newOwner", "type": "address" }],
+          "inputs": [],
+          "name": "totalLoanCredits",
+          "outputs": [
+            { "internalType": "uint256", "name": "", "type": "uint256" }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [],
+          "name": "totalLoanWithdrawn",
+          "outputs": [
+            { "internalType": "uint256", "name": "", "type": "uint256" }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            { "internalType": "address", "name": "newOwner", "type": "address" }
+          ],
           "name": "transferOwnership",
           "outputs": [],
           "stateMutability": "nonpayable",
           "type": "function"
         },
         {
-          "inputs": [{ "internalType": "uint256", "name": "amount", "type": "uint256" }],
+          "inputs": [
+            { "internalType": "address", "name": "to", "type": "address" },
+            { "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
+          "name": "withdrawLoanPool",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            { "internalType": "uint256", "name": "amount", "type": "uint256" }
+          ],
           "name": "withdrawSavings",
           "outputs": [],
           "stateMutability": "nonpayable",
