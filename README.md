@@ -1,80 +1,116 @@
-# 🏗 Scaffold-ETH 2
+# Save Na Boda
 
-<h4 align="center">
-  <a href="https://docs.scaffoldeth.io">Documentation</a> |
-  <a href="https://scaffoldeth.io">Website</a>
-</h4>
+A blockchain platform that partners with lenders to make motorbike financing fair, transparent, and empowering. Built with Scaffold-ETH.
 
-🧪 An open-source, up-to-date toolkit for building decentralized applications (dapps) on the Ethereum blockchain. It's designed to make it easier for developers to create and deploy smart contracts and build user interfaces that interact with those contracts.
+Live Demo: https://rad-rolypoly-9c3f5f.netlify.app/
 
-⚙️ Built using NextJS, RainbowKit, Foundry, Wagmi, Viem, and Typescript.
+## Overview
 
-- ✅ **Contract Hot Reload**: Your frontend auto-adapts to your smart contract as you edit it.
-- 🪝 **[Custom hooks](https://docs.scaffoldeth.io/hooks/)**: Collection of React hooks wrapper around [wagmi](https://wagmi.sh/) to simplify interactions with smart contracts with typescript autocompletion.
-- 🧱 [**Components**](https://docs.scaffoldeth.io/components/): Collection of common web3 components to quickly build your frontend.
-- 🔥 **Burner Wallet & Local Faucet**: Quickly test your application with a burner wallet and local faucet.
-- 🔐 **Integration with Wallet Providers**: Connect to different wallet providers and interact with the Ethereum network.
+In Kenya, over 1.2M boda-boda riders rely on loans to own their motorcycles. Many face predatory lenders, hidden charges, and repossessions.
 
-![Debug Contracts tab](https://github.com/scaffold-eth/scaffold-eth-2/assets/55535804/b237af0c-5027-4849-a5c1-2e31495cccb1)
+SavenaBoda solves this by:
+- Creating transparent repayment schedules on smart contracts.
+- Splitting each payment into loan repayment + rider savings.
+- Using savings as collateral for future loans.
+- Building an on-chain credit history riders can take anywhere.
 
-## Requirements
+## Tech stack
 
-Before you begin, you need to install the following tools:
+- Scaffold-ETH 2 – development framework.
+- Solidity / Foundry – smart contracts.
+- React + Next.js – frontend.
+- TailwindCSS – styling.
+- MockUSDC.sol – a mock stablecoin for demo transactions.
 
-- [Node (>= v20.18.3)](https://nodejs.org/en/download/)
-- Yarn ([v1](https://classic.yarnpkg.com/en/docs/install/) or [v2+](https://yarnpkg.com/getting-started/install))
-- [Git](https://git-scm.com/downloads)
+## Smart Contracts
 
-## Quickstart
+- BodaSavings.sol – manages loan repayment, savings wallet, and collateralization.
+- MockUSDC.sol – test stablecoin to simulate USDC for repayments.
 
-To get started with Scaffold-ETH 2, follow the steps below:
+## Core Flow:
 
-1. Install dependencies if it was skipped in CLI:
+- Register Rider – rider joins the system.
+- Deposit (Repayment) – rider pays in MockUSDC.
+- Auto-splits into loanRepayment + savingsWallet.
+- Track Progress – riders and lenders see transparent repayment status.
+- Collateral Savings – savings can be used to support new loans.
 
-```
-cd my-dapp-example
-yarn install
-```
+## Installation & Setup
 
-2. Run a local network in the first terminal:
-
-```
-yarn chain
-```
-
-This command starts a local Ethereum network using Foundry. The network runs on your local machine and can be used for testing and development. You can customize the network configuration in `packages/foundry/foundry.toml`.
-
-3. On a second terminal, deploy the test contract:
+1. Clone Scaffold-ETH 2
 
 ```
-yarn deploy
+git clone https://github.com/Talent-Index/BodaSave
+cd BodaSave
 ```
 
-This command deploys a test smart contract to the local network. The contract is located in `packages/foundry/contracts` and can be modified to suit your needs. The `yarn deploy` command uses the deploy script located in `packages/foundry/script` to deploy the contract to the network. You can also customize the deploy script.
+2. Install Dependencies
+   
+```
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+forge install
+```
 
-4. On a third terminal, start your NextJS app:
+3. Build Contract
 
+```
+forge build
+```
+
+4. Start localchain
+
+```
+anvil
+```
+
+5. Deploy Contracts 
+
+```
+forge script script/Deploy.s.sol --rpc-url http://localhost:8545 --broadcast
+```
+
+6. Start Frontend
+   
 ```
 yarn start
 ```
 
-Visit your app on: `http://localhost:3000`. You can interact with your smart contract using the `Debug Contracts` page. You can tweak the app config in `packages/nextjs/scaffold.config.ts`.
+Now open http://localhost:3000
 
-Run smart contract test with `yarn foundry:test`
+## Demo Instructions
 
-- Edit your smart contracts in `packages/foundry/contracts`
-- Edit your frontend homepage at `packages/nextjs/app/page.tsx`. For guidance on [routing](https://nextjs.org/docs/app/building-your-application/routing/defining-routes) and configuring [pages/layouts](https://nextjs.org/docs/app/building-your-application/routing/pages-and-layouts) checkout the Next.js documentation.
-- Edit your deployment scripts in `packages/foundry/script`
+1. Start anvil (local blockchain).
+2. Deploy contracts with Foundry script.
+3. Use the frontend to:
+- Register a rider.
+- Mint MockUSDC (test tokens).
+- Deposit repayment → see auto-split into loan & savings.
+- Track rider savings wallet & loan status.
+
+## Why This Matters
+
+- Riders → Fair loans, savings safety net, and credit history.
+- Lenders → Lower default risk, transparent repayments, stronger customer trust.
+- Community → More ownership, less exploitation.
+
+## Screenshots
+
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/c01f3024-a977-4cf8-b389-a01111c0aa21" />
 
 
-## Documentation
 
-Visit our [docs](https://docs.scaffoldeth.io) to learn how to start building with Scaffold-ETH 2.
+## Future Work
 
-To know more about its features, check out our [website](https://scaffoldeth.io).
+- Integrate with real USDC stablecoin on Celo/Polygon.
+- Partner with SACCOs & lenders to onboard riders.
+- Add mobile-friendly UI for boda riders.
+- Insurance integration (accident cover + income protection).
 
-## Contributing to Scaffold-ETH 2
+## Acknowledgments
 
-We welcome contributions to Scaffold-ETH 2!
+- Scaffold-ETH for the amazing dev framework.
+- Mini-Hackathon mentors & community.
+- Riders & SACCOs who inspired this solution.
 
-Please see [CONTRIBUTING.MD](https://github.com/scaffold-eth/scaffold-eth-2/blob/main/CONTRIBUTING.md) for more information and guidelines for contributing to Scaffold-ETH 2.
+
