@@ -98,7 +98,7 @@ npm install -g yarn
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/bodaboda-savings.git
+git clone https://github.com/Talent-Index/BodaSave.git
 cd bodaboda-savings
 
 # Install dependencies
