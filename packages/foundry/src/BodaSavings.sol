@@ -9,6 +9,20 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 /// @notice Simple demo contract: deposit ERC20 -> split 50/50 to savings & loan credit
 /// @dev For demo/prototype use only - uses MockUSDC for testing
 contract BodaBodaSavings is Ownable {
+    // ============================
+    //         Custom Errors
+    // ============================
+    error BodaBodaSavings__StableCoinCannotBeAddressZero();
+    error BodaBodaSavings__InvalidStablecoinContract();
+    error BodaBodaSavings__ZeroDeposit();
+    error BodaBodaSavings__TransferFailed();
+    error BodaBodaSavings__ZeroWithdraw();
+    error BodaBodaSavings__InsufficientSavings();
+    error BodaBodaSavings__ZeroAddressRecipient();
+    error BodaBodaSavings__ExceedsAvailablePool();
+    error BodaBodaSavings__ZeroAddressToken();
+    error BodaBodaSavings__CannotWithdrawStablecoinViaRecover();
+
     struct Rider {
         uint256 savings; // credited to savings
         uint256 loanRepaid; // credited to loan repayment
@@ -30,21 +44,24 @@ contract BodaBodaSavings is Ownable {
     /// @param _stablecoin MockUSDC contract address
     /// @param initialOwner Initial owner of the contract
     constructor(address _stablecoin, address initialOwner) Ownable(initialOwner) {
-        require(_stablecoin != address(0), "Stablecoin zero address");
+        if (_stablecoin == address(0))
+            revert BodaBodaSavings__StableCoinCannotBeAddressZero();
+
         stablecoin = IERC20(_stablecoin);
 
         // Verify the token has decimals function
         (bool success,) = _stablecoin.staticcall(abi.encodeWithSignature("decimals()"));
-        require(success, "Invalid stablecoin contract");
+        if (!success) revert BodaBodaSavings__InvalidStablecoinContract();
     }
 
     /// @notice Deposit stablecoin (caller must approve first)
     /// @param amount Amount of stablecoin to deposit
     function deposit(uint256 amount) external {
-        require(amount > 0, "Zero deposit");
+        if (amount == 0) revert BodaBodaSavings__ZeroDeposit();
 
         bool success = stablecoin.transferFrom(msg.sender, address(this), amount);
-        require(success, "Transfer failed");
+            if (!success) 
+        revert BodaBodaSavings__TransferFailed();
 
         uint256 half = amount / 2;
         uint256 loanPart = amount - half; // handle odd amounts by giving extra to loan part
@@ -69,15 +86,16 @@ contract BodaBodaSavings is Ownable {
     /// @notice Rider withdraws their savings
     /// @param amount Amount to withdraw from savings
     function withdrawSavings(uint256 amount) external {
-        require(amount > 0, "Zero withdraw");
+        if (amount == 0) revert 
+        BodaBodaSavings__ZeroWithdraw();
 
         Rider storage rider = riders[msg.sender];
-        require(rider.savings >= amount, "Insufficient savings");
+        if (rider.savings < amount) revert BodaBodaSavings__InsufficientSavings();
 
         rider.savings -= amount;
 
         bool success = stablecoin.transfer(msg.sender, amount);
-        require(success, "Transfer failed");
+        if (!success) revert BodaBodaSavings__TransferFailed();
 
         emit WithdrawSavings(msg.sender, amount);
     }
@@ -86,15 +104,15 @@ contract BodaBodaSavings is Ownable {
     /// @param to Recipient address
     /// @param amount Amount to withdraw from loan pool
     function withdrawLoanPool(address to, uint256 amount) external onlyOwner {
-        require(to != address(0), "Zero address recipient");
+        if (to == address(0)) revert BodaBodaSavings__ZeroAddressRecipient();
 
         uint256 available = totalLoanCredits - totalLoanWithdrawn;
-        require(amount <= available, "Exceeds available pool");
+        if (amount > available) revert BodaBodaSavings__ExceedsAvailablePool();
 
         totalLoanWithdrawn += amount;
 
         bool success = stablecoin.transfer(to, amount);
-        require(success, "Transfer failed");
+        if (!success) revert BodaBodaSavings__TransferFailed();
 
         emit WithdrawLoanPool(to, amount);
     }
@@ -114,7 +132,8 @@ contract BodaBodaSavings is Ownable {
     /// @notice Owner can change the stablecoin address (use with caution)
     /// @param _stablecoin New stablecoin address
     function setStablecoin(address _stablecoin) external onlyOwner {
-        require(_stablecoin != address(0), "Stablecoin zero address");
+        if (_stablecoin == address(0))
+            revert BodaBodaSavings__StableCoinCannotBeAddressZero();
 
         address oldStablecoin = address(stablecoin);
         stablecoin = IERC20(_stablecoin);
@@ -127,14 +146,12 @@ contract BodaBodaSavings is Ownable {
     /// @param to Recipient address
     /// @param amount Amount to recover
     function recoverERC20(address token, address to, uint256 amount) external onlyOwner {
-        require(to != address(0), "Zero address recipient");
-        require(token != address(0), "Zero address token");
-
-        // Prevent withdrawing the current stablecoin through this function
-        require(token != address(stablecoin), "Use withdrawLoanPool for stablecoin");
+        if (to == address(0)) revert BodaBodaSavings__ZeroAddressRecipient();
+        if (token == address(0)) revert BodaBodaSavings__ZeroAddressToken();
+        if (token == address(stablecoin)) revert BodaBodaSavings__CannotWithdrawStablecoinViaRecover();
 
         bool success = IERC20(token).transfer(to, amount);
-        require(success, "Transfer failed");
+        if (!success) revert BodaBodaSavings__TransferFailed();
 
         emit ERC20Recovered(token, to, amount);
     }
