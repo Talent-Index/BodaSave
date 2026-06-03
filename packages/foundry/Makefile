@@ -1,10 +1,10 @@
 .PHONY: build deploy generate-abis get-address account chain compile flatten fork format lint test verify
 
-DEPLOY_SCRIPT ?= script/Deploy.s.sol
+DEPLOY_SCRIPT ?= script/DeployBodaSave.s.sol
 
 # setup wallet for anvil
 setup-anvil-wallet:
-	shx rm ~/.foundry/keystores/scaffold-eth-default 2>/dev/null; 	shx rm -rf broadcast/Deploy.s.sol/31337
+	shx rm ~/.foundry/keystores/scaffold-eth-default 2>/dev/null; 	shx rm -rf broadcast/DeployBodaSave.s.sol/31337
 	cast wallet import --private-key 0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6 --unsafe-password 'localhost' scaffold-eth-default
 
 # Start local chain
@@ -58,4 +58,3 @@ test:
 # Verify contracts
 verify:
 	forge script script/VerifyAll.s.sol --ffi --rpc-url $(RPC_URL)
-
