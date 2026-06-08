@@ -5,35 +5,44 @@ import { Script, console } from "forge-std/Script.sol";
 import { MockUSDC }         from "../src/MockUSDC.sol";
 import { BodaBodaSavings }  from "../src/BodaSavings.sol";
 
-/// @notice Deploys MockUSDC and BodaBodaSavings with a set of founding lenders.
+/// @notice Deploys MockUSDC (v2 — ERC20Permit) and BodaBodaSavings (V3).
 ///
 ///         Demo lender setup
 ///         ──────────────────
 ///         Three placeholder lenders are registered at deployment:
-///           • Mwanga Haba SACCO  — weekly collection  (7 days)
-///           • Faulu MFB          — monthly collection (30 days)
-///           • Kenya Women MFI    — daily collection   (1 day)
+///           • Mwanga Haba SACCO  — 7-day cycle   | WEEKLY schedule
+///           • Faulu MFB          — 30-day cycle   | MONTHLY schedule
+///           • Kenya Women MFI    — 1-day cycle    | WEEKLY schedule
 ///
-///         Replace the addresses below with real lender wallets before
+///         Replace the lender addresses below with real wallets before
 ///         deploying to a public testnet or mainnet.
+///
+///         V3 constructor changes vs V2
+///         ─────────────────────────────
+///         • Now accepts a RepaymentSchedule[] array as the 5th parameter [ID-3].
+///         • initialOwner moved to 6th parameter.
 ///
 /// @dev    Run with:
 ///         forge script script/DeployBodaSave.s.sol --rpc-url <RPC> \
-///             --account <KEYSTORE> --broadcast
+///             --account <KEYSTORE> --broadcast --verify
 contract Deploy is Script {
 
     // ── Placeholder lender addresses (replace before real deployment) ──
-    address constant LENDER_MWANGA_HABA  = address(0x1111);
-    address constant LENDER_FAULU        = address(0x2222);
-    address constant LENDER_KENYA_WOMEN  = address(0x3333);
+    address constant LENDER_MWANGA_HABA = address(0x1111);
+    address constant LENDER_FAULU       = address(0x2222);
+    address constant LENDER_KENYA_WOMEN = address(0x3333);
 
     function run() external {
         vm.startBroadcast();
 
-        // 1. Deploy MockUSDC with 100,000 tokens minted to deployer
-        MockUSDC mockUSDC = new MockUSDC(100_000 * 10 ** 6, msg.sender);
+        // ── 1. Deploy MockUSDC v2 (has ERC20Permit for depositWithPermit) ──
+        MockUSDC mockUSDC = new MockUSDC(
+            100_000 * 10 ** 6,  // 100 000 mUSDC minted to deployer
+            msg.sender
+        );
 
-        // 2. Build lender registry arrays
+        // ── 2. Build lender registry arrays ──────────────────────────────
+
         address[] memory lenderAddrs = new address[](3);
         lenderAddrs[0] = LENDER_MWANGA_HABA;
         lenderAddrs[1] = LENDER_FAULU;
@@ -45,26 +54,52 @@ contract Deploy is Script {
         lenderNames[2] = "Kenya Women MFI";
 
         uint256[] memory cycles = new uint256[](3);
-        cycles[0] = 7 days;   // weekly
-        cycles[1] = 30 days;  // monthly
-        cycles[2] = 1 days;   // daily
+        cycles[0] = 7 days;    // weekly pot deadline
+        cycles[1] = 30 days;   // monthly pot deadline
+        cycles[2] = 1 days;    // daily pot deadline
 
-        // 3. Deploy BodaBodaSavings (V2)
+        // [ID-3] RepaymentSchedule — displayed on the Loan & Pot frontend tab
+        BodaBodaSavings.RepaymentSchedule[] memory schedules =
+            new BodaBodaSavings.RepaymentSchedule[](3);
+        schedules[0] = BodaBodaSavings.RepaymentSchedule.WEEKLY;
+        schedules[1] = BodaBodaSavings.RepaymentSchedule.MONTHLY;
+        schedules[2] = BodaBodaSavings.RepaymentSchedule.WEEKLY;
+
+        // ── 3. Deploy BodaBodaSavings V3 ─────────────────────────────────
+        //
+        //       Constructor signature (V3):
+        //         address            _stablecoin
+        //         address[] memory   _lenderAddrs
+        //         string[]  memory   _lenderNames
+        //         uint256[] memory   _cycles
+        //         RepaymentSchedule[] memory _schedules   ← NEW in V3
+        //         address            initialOwner
+        //
+        //       PRODUCTION NOTE: replace msg.sender with a Gnosis Safe address.
         BodaBodaSavings savings = new BodaBodaSavings(
             address(mockUSDC),
             lenderAddrs,
             lenderNames,
             cycles,
-            msg.sender        // initialOwner — use a Gnosis Safe in production
+            schedules,
+            msg.sender
         );
 
         vm.stopBroadcast();
 
-        // 4. Log deployed addresses
+        // ── 4. Log deployed addresses ─────────────────────────────────────
+        console.log("=== BodaSave V3 Deployment ===");
         console.log("MockUSDC deployed to:       ", address(mockUSDC));
         console.log("BodaBodaSavings deployed to:", address(savings));
+        console.log("------------------------------");
         console.log("Lender[0] Mwanga Haba SACCO:", lenderAddrs[0]);
+        console.log("  cycle:    7 days | schedule: WEEKLY");
         console.log("Lender[1] Faulu MFB:        ", lenderAddrs[1]);
+        console.log("  cycle:   30 days | schedule: MONTHLY");
         console.log("Lender[2] Kenya Women MFI:  ", lenderAddrs[2]);
+        console.log("  cycle:    1 day  | schedule: WEEKLY");
+        console.log("------------------------------");
+        console.log("Owner:                      ", msg.sender);
+        console.log("Chain ID:                   ", block.chainid);
     }
 }

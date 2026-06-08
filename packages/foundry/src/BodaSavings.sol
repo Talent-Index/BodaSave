@@ -1,59 +1,66 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IERC20}           from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {Ownable}          from "@openzeppelin/contracts/access/Ownable.sol";
-import {Pausable}         from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard}  from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20}          from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Permit}    from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import {SafeERC20}       from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC20Metadata}  from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {Ownable}         from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable}        from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @title  BodaBodaSavings  (v2)
+/// @title  BodaBodaSavings  (v3.1)
 /// @author Team
 /// @notice Savings + loan repayment platform for bodaboda riders in Kenya.
 ///
 ///         Core flow
 ///         ─────────
-///         1. Owner registers verified lenders at deployment (hardcoded) or via addLender().
-///         2. Owner runs off-chain KYC (Smile Identity / NTSA), then calls registerRider()
-///            with the resulting verificationHash, linking the rider to a specific lender.
-///         3. Rider deposits USDT — split 50/50:
-///              • savingsBalance  — rider's personal locked savings
-///              • loanBalance     — loan repayment credit, linked to their lender
+///         1. Owner registers verified lenders at deployment (or via addLender()).
+///         2. Rider self-registers: personal details + lender choice + split ratio.
+///            Owner must have pre-approved KYC off-chain (Smile Identity / NTSA).
+///         3. Rider deposits via:
+///              a) deposit()            — standard approve → deposit (two steps)
+///              b) depositWithPermit()  — EIP-2612 permit  → deposit (one step, no approve tx)
+///            Split is determined by the rider's chosen SplitRatio, not hardcoded 50/50.
 ///         4. Rider locks loanBalance into the pot to schedule repayment.
-///            Pot deadline = lender's collectionCycle (dynamic, not hardcoded).
-///         5. Rider withdraws savings by submitting a category + amount → owner approves
-///            → WITHDRAWAL_DELAY elapses → rider claims.
+///            Pot deadline = lender's collectionCycle (seconds), SNAPSHOTTED at lock time.
+///         5. Rider withdraws savings: requestWithdrawal() → owner approves →
+///            WITHDRAWAL_DELAY elapses → claimWithdrawal().
 ///
-/// @dev    WITHDRAWAL_DELAY is 150s for demo purposes. Change for production.
+/// @dev    v3.1 Changes (audit remediation on top of v3)
+///         ────────────────────────────────────────────────
+///         [AUD-1]  SafeERC20 used for ALL token movements. Removes silent failures
+///                  against non-standard tokens (e.g. USDT-style no-return-value).
+///         [AUD-2]  Pot deadline is SNAPSHOTTED into the Rider struct at lock time
+///                  (potDeadline) and settled against the snapshot. An owner changing
+///                  the lender cycle mid-pot can no longer retroactively move a
+///                  rider's deadline.
+///         [AUD-3]  Withdrawal claim/deny no longer gated on KYC/license expiry.
+///                  Savings are the rider's own money — claimWithdrawal() and the
+///                  cancel paths use onlyRegistered, not onlyVerified. Owner can also
+///                  revoke an ALREADY-APPROVED withdrawal, and a rider can cancel
+///                  their own pending/approved request. Eliminates the stuck-state.
+///         [AUD-4]  setStablecoin() now requires ALL internal aggregate accounting
+///                  to be zero (not just the live token balance) and enforces that
+///                  the new token reports the same decimals as the old one.
+///         [AUD-5]  _getSplitPercentages() unreachable branch now reverts instead of
+///                  silently returning 50/50, removing the latent default mismatch.
 ///
-/// @dev    v2 Changes (audit fixes)
-///         ─────────────────────────
-///         [SEC-1]  Added ReentrancyGuard; nonReentrant on all external transfer functions.
-///         [SEC-2]  setStablecoin() now requires zero contract balance before swap;
-///                  also validates decimals() on the new address.
-///         [SEC-3]  Owner centralisation documented; multisig/timelock recommended in prod.
-///         [SEC-4]  onlyVerified modifier now checks licenseExpiry at every interaction.
-///         [SEC-5]  denyWithdrawal() uses `delete` to fully clear the stale struct.
-///         [GAS-6]  Rider struct: bool fields packed together at the end of the struct.
-///         [GAS-7]  _isValidCategory() replaced with O(1) mapping lookup.
-///         [GAS-8]  collectionCycle cached into a local variable in all callers.
-///         [GAS-9]  getLenders() supports optional pagination (offset + limit).
-///         [LOG-10] getAvailableLoanPool() renamed & documented; new getLockedPotTotal()
-///                  helper added for accurate pool accounting.
-///         [LOG-11] _settlePot() caps settlement at remaining loan balance; excess
-///                  is returned to loanBalance so the rider is never overcharged.
-///         [LOG-12] potIntendedPayAt removed from Rider struct; emitted in PotLocked only.
-///         [LOG-13] updateLoanTarget() added for loan restructuring by owner.
-///         [SEC-14] setStablecoin() now validates decimals() on the new contract.
+///         v3 features (unchanged): [ID-1..ID-8] identity, split, schedule,
+///         self-registration, depositWithPermit, getRiderProfile.
+
 contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
+
+    using SafeERC20 for IERC20;   // [AUD-1]
 
     // ================================================================
     //                         CONSTANTS
     // ================================================================
 
-    /// @dev 150 seconds (2.5 min) for demo. Set to e.g. 2 days for production.
+    /// @dev 150 seconds for demo. Set to e.g. 172_800 (48 h) for production.
     uint256 public constant WITHDRAWAL_DELAY = 150;
 
-    // ── Withdrawal reason categories ──
+    // ── Withdrawal reason categories ──────────────────────────────────
     bytes32 public constant REASON_MEDICAL           = "MEDICAL";
     bytes32 public constant REASON_REPAIR            = "REPAIR";
     bytes32 public constant REASON_EDUCATION         = "EDUCATION";
@@ -62,7 +69,7 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     bytes32 public constant REASON_FAMILY_OBLIGATION = "FAMILY_OBLIGATION";
     bytes32 public constant REASON_OTHER             = "OTHER";
 
-    // ── KYC verification levels ──
+    // ── KYC verification levels ───────────────────────────────────────
     uint8 public constant KYC_BASIC   = 1;
     uint8 public constant KYC_FULL    = 2;
     uint8 public constant KYC_PREMIUM = 3;
@@ -74,10 +81,12 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     // — Stablecoin —
     error BodaBodaSavings__StablecoinCannotBeZeroAddress();
     error BodaBodaSavings__InvalidStablecoinContract();
-    error BodaBodaSavings__TransferFailed();
+    error BodaBodaSavings__TransferFailed();           // retained for ABI compat (now unused)
     error BodaBodaSavings__CannotRecoverStablecoin();
     error BodaBodaSavings__ZeroAddressToken();
-    error BodaBodaSavings__ContractBalanceMustBeZero();  // [SEC-2]
+    error BodaBodaSavings__ContractBalanceMustBeZero();
+    error BodaBodaSavings__OutstandingAccounting();     // [AUD-4]
+    error BodaBodaSavings__DecimalsMismatch();          // [AUD-4]
 
     // — General —
     error BodaBodaSavings__ZeroAddress();
@@ -99,6 +108,11 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     error BodaBodaSavings__InvalidKycLevel();
     error BodaBodaSavings__LicenseExpired();
 
+    // — Identity [ID-1] —
+    error BodaBodaSavings__NameRequired();
+    error BodaBodaSavings__InvalidAge();          // must be 18–65
+    error BodaBodaSavings__InvalidGender();       // must be 'M', 'F', or 'O'
+
     // — Deposit / Savings —
     error BodaBodaSavings__ZeroDeposit();
     error BodaBodaSavings__InsufficientSavings();
@@ -107,6 +121,7 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     // — Loan —
     error BodaBodaSavings__LoanAlreadyCleared();
     error BodaBodaSavings__ExceedsAvailablePool();
+    error BodaBodaSavings__InvalidSplitRatio();         // [AUD-5]
 
     // — Pot —
     error BodaBodaSavings__PotAlreadyActive();
@@ -120,9 +135,10 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     error BodaBodaSavings__WithdrawalNotApproved();
     error BodaBodaSavings__WithdrawalDelayNotMet();
     error BodaBodaSavings__InvalidWithdrawalCategory();
+    error BodaBodaSavings__NoWithdrawalToCancel();      // [AUD-3]
 
     // — Loan restructure —
-    error BodaBodaSavings__NewTargetBelowRepaid();       // [LOG-13]
+    error BodaBodaSavings__NewTargetBelowRepaid();
 
     // ================================================================
     //                           ENUMS
@@ -134,62 +150,88 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         Approved
     }
 
+    /// @notice How a rider's deposit is split between savings and loan repayment. [ID-2]
+    enum SplitRatio {
+        SPLIT_70_30,   // 70 % savings | 30 % loan
+        SPLIT_60_40,   // 60 % savings | 40 % loan
+        SPLIT_50_50,   // 50 % savings | 50 % loan  (previous hardcoded behaviour)
+        SPLIT_40_60,   // 40 % savings | 60 % loan
+        SPLIT_30_70    // 30 % savings | 70 % loan
+    }
+
+    /// @notice Lender's preferred repayment collection frequency. [ID-3]
+    enum RepaymentSchedule {
+        WEEKLY,
+        BIWEEKLY,
+        MONTHLY
+    }
+
     // ================================================================
     //                          STRUCTS
     // ================================================================
 
+    /// @notice On-chain lender record.
     struct Lender {
-        string  name;
-        address lenderAddress;
-        uint256 collectionCycle;
-        bool    verified;
-        bool    active;
+        string            name;
+        address           lenderAddress;
+        uint256           collectionCycle;   // seconds between pot settlements
+        RepaymentSchedule schedule;          // [ID-3] WEEKLY | BIWEEKLY | MONTHLY
+        bool              verified;
+        bool              active;
     }
 
+    /// @notice Off-chain KYC record stored on-chain for audit trail.
     struct RiderKYC {
         bytes32 verificationHash;
-        uint8   verificationLevel;  // packed with bool verified (saves one slot)
-        bool    verified;           // [GAS-6] packed next to verificationLevel
+        uint8   verificationLevel;
+        bool    verified;
         uint256 verifiedAt;
         uint256 licenseExpiry;
         bytes32 kycProvider;
     }
 
-    /// @notice Full financial state per rider.
-    /// @dev    [GAS-6] Both bool fields are placed at the END of the struct so they
-    ///         share one 32-byte storage slot rather than each consuming a full slot.
+    /// @notice Full rider state — identity + financials.
+    ///
+    ///         [AUD-2] potDeadline added — absolute timestamp snapshotted at lock
+    ///                 time so a later lender-cycle change cannot move it.
     struct Rider {
-        // ── Identity ──
-        address lenderAddress;
+        // ── Identity [ID-1] ──────────────────────────────────────────
+        string     name;           // rider's full name
+        bytes1     gender;         // 'M' | 'F' | 'O'  (1 byte, cheaper than string)
 
-        // ── Loan (repayment side) ──
-        uint256 loanTarget;
-        uint256 loanBalance;
-        uint256 loanRepaid;
+        // ── Lender + Split ───────────────────────────────────────────
+        address    lenderAddress;
+        SplitRatio splitRatio;     // [ID-2] chosen at registration
 
-        // ── Savings (personal side) ──
-        uint256 savingsBalance;
-        uint256 totalDeposited;
-        uint256 totalWithdrawn;
-        uint256 withdrawalCount;
-        uint256 lastDepositAt;
-        uint256 firstDepositAt;
+        // ── Loan (repayment side) ────────────────────────────────────
+        uint256    loanTarget;
+        uint256    loanBalance;
+        uint256    loanRepaid;
 
-        // ── Pot (sits on loan side) ──
-        uint256 potBalance;
-        uint256 potLockedAt;
-        // [LOG-12] potIntendedPayAt removed — emitted in PotLocked event only
+        // ── Savings (personal side) ──────────────────────────────────
+        uint256    savingsBalance;
+        uint256    totalDeposited;
+        uint256    totalWithdrawn;
+        uint256    withdrawalCount;
+        uint256    lastDepositAt;
+        uint256    firstDepositAt;
 
-        // ── Flags (packed together into one slot) ── [GAS-6]
-        bool    potActive;
-        bool    registered;
+        // ── Pot (sits on loan side) ──────────────────────────────────
+        uint256    potBalance;
+        uint256    potLockedAt;
+        uint256    potDeadline;    // [AUD-2] absolute settle deadline, snapshotted
+
+        // ── Packed flags ─────────────────────────────────────────────
+        uint8      age;            // 1 byte
+        bool       potActive;      // 1 byte
+        bool       registered;     // 1 byte
     }
 
     struct WithdrawalRequest {
-        uint256         amount;
-        bytes32         category;
-        uint256         requestedAt;
-        uint256         approvedAt;
+        uint256          amount;
+        bytes32          category;
+        uint256          requestedAt;
+        uint256          approvedAt;
         WithdrawalStatus status;
     }
 
@@ -223,35 +265,43 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     mapping(address => WithdrawalRecord[]) private _withdrawalHistory;
     mapping(address => PotRecord[])        private _potHistory;
 
-    /// @dev [GAS-7] O(1) category lookup — populated in constructor
+    /// @dev O(1) category lookup — populated once in constructor
     mapping(bytes32 => bool) private _validCategories;
 
-    /// @notice Total loan-side deposits received across all riders (lifetime)
     uint256 public totalLoanCredits;
-
-    /// @notice Total settled to lenders via pot mechanism (lifetime)
     uint256 public totalLoanSettled;
-
-    /// @notice Total currently locked in active pots (live balance) — [LOG-10]
     uint256 public totalLockedInPots;
+
+    /// @dev [AUD-4] Aggregate of all rider savings currently held by the contract,
+    ///      including amounts sitting in pending/approved withdrawal requests.
+    ///      Used by setStablecoin() to confirm the contract is truly empty of
+    ///      obligations before a token swap.
+    uint256 public totalSavingsHeld;
 
     // ================================================================
     //                           EVENTS
     // ================================================================
 
-    event LenderAdded(address indexed lenderAddress, string name, uint256 collectionCycle);
+    event LenderAdded(
+        address indexed lenderAddress,
+        string name,
+        uint256 collectionCycle,
+        RepaymentSchedule schedule    // [ID-3]
+    );
     event LenderDeactivated(address indexed lenderAddress);
     event LenderReactivated(address indexed lenderAddress);
     event LenderCycleUpdated(address indexed lenderAddress, uint256 newCycle);
 
     event RiderRegistered(
         address indexed rider,
+        string  name,
         address indexed lender,
         uint256 loanTarget,
-        uint8   kycLevel
+        uint8   kycLevel,
+        SplitRatio splitRatio         // [ID-2]
     );
     event RiderKYCUpdated(address indexed rider, uint8 newLevel);
-    event LoanTargetUpdated(address indexed rider, uint256 oldTarget, uint256 newTarget); // [LOG-13]
+    event LoanTargetUpdated(address indexed rider, uint256 oldTarget, uint256 newTarget);
 
     event Deposit(
         address indexed rider,
@@ -267,12 +317,12 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         address indexed rider,
         uint256 amount,
         uint256 lockedAt,
-        uint256 intendedPayAt,   // informational only — not stored on-chain [LOG-12]
+        uint256 intendedPayAt,
         uint256 autoDeadline
     );
     event PotReleasedByRider(address indexed rider, uint256 amount, uint256 releasedAt);
     event PotAutoSettled(address indexed rider, uint256 amount, uint256 settledAt);
-    event PotExcessReturned(address indexed rider, uint256 excess);  // [LOG-11]
+    event PotExcessReturned(address indexed rider, uint256 excess);
 
     event WithdrawalRequested(
         address indexed rider,
@@ -282,6 +332,7 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     );
     event WithdrawalApproved(address indexed rider, uint256 amount, uint256 approvedAt);
     event WithdrawalDenied(address indexed rider, uint256 amount, uint256 deniedAt);
+    event WithdrawalCancelled(address indexed rider, uint256 amount, uint256 cancelledAt); // [AUD-3]
     event WithdrawalClaimed(address indexed rider, uint256 amount, uint256 claimedAt);
 
     event StablecoinUpdated(address indexed oldStablecoin, address indexed newStablecoin);
@@ -291,17 +342,15 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     //                         MODIFIERS
     // ================================================================
 
-    /// @dev Registered rider only
     modifier onlyRegistered() {
         if (!riders[msg.sender].registered) revert BodaBodaSavings__RiderNotRegistered();
         _;
     }
 
-    /// @dev Registered + KYC-verified + non-expired license [SEC-4]
     modifier onlyVerified() {
-        if (!riders[msg.sender].registered) revert BodaBodaSavings__RiderNotRegistered();
+        if (!riders[msg.sender].registered)    revert BodaBodaSavings__RiderNotRegistered();
         RiderKYC storage k = riderKYC[msg.sender];
-        if (!k.verified)                    revert BodaBodaSavings__RiderNotVerified();
+        if (!k.verified)                       revert BodaBodaSavings__RiderNotVerified();
         if (block.timestamp > k.licenseExpiry) revert BodaBodaSavings__LicenseExpired();
         _;
     }
@@ -310,40 +359,35 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     //                        CONSTRUCTOR
     // ================================================================
 
-    /// @param _stablecoin   USDT / MockUSDC contract address
+    /// @param _stablecoin   USDT / MockUSDC address (must implement decimals())
     /// @param _lenderAddrs  Pre-approved lender wallet addresses
-    /// @param _lenderNames  Corresponding lender names
-    /// @param _cycles       Corresponding collection cycles in seconds
+    /// @param _lenderNames  Corresponding lender display names
+    /// @param _cycles       Collection cycles in seconds per lender
+    /// @param _schedules    RepaymentSchedule per lender [ID-3]
     /// @param initialOwner  Deployer / platform admin
-    ///
-    /// @dev [SEC-3] IMPORTANT — PRODUCTION DEPLOYMENT CHECKLIST:
-    ///      • Deploy behind a Gnosis Safe multisig as `initialOwner`.
-    ///      • Wrap sensitive admin calls (setStablecoin, pause) behind a
-    ///        TimelockController (48h minimum delay).
-    ///      • Consider an upgrade path via UUPS proxy if protocol parameters
-    ///        will need adjustment post-launch.
     constructor(
-        address   _stablecoin,
-        address[] memory _lenderAddrs,
-        string[]  memory _lenderNames,
-        uint256[] memory _cycles,
-        address   initialOwner
+        address            _stablecoin,
+        address[] memory   _lenderAddrs,
+        string[]  memory   _lenderNames,
+        uint256[] memory   _cycles,
+        RepaymentSchedule[] memory _schedules,  // [ID-3]
+        address            initialOwner
     ) Ownable(initialOwner) {
         if (_stablecoin == address(0))
             revert BodaBodaSavings__StablecoinCannotBeZeroAddress();
         if (_lenderAddrs.length == 0)
             revert BodaBodaSavings__NoLendersProvided();
-        if (_lenderAddrs.length != _lenderNames.length ||
-            _lenderAddrs.length != _cycles.length)
+        if (_lenderAddrs.length != _lenderNames.length  ||
+            _lenderAddrs.length != _cycles.length       ||
+            _lenderAddrs.length != _schedules.length)
             revert BodaBodaSavings__InvalidCollectionCycle();
 
-        // Validate stablecoin interface
         (bool ok,) = _stablecoin.staticcall(abi.encodeWithSignature("decimals()"));
         if (!ok) revert BodaBodaSavings__InvalidStablecoinContract();
 
         stablecoin = IERC20(_stablecoin);
 
-        // [GAS-7] Populate O(1) category lookup once at construction
+        // O(1) category lookup
         _validCategories[REASON_MEDICAL]           = true;
         _validCategories[REASON_REPAIR]            = true;
         _validCategories[REASON_EDUCATION]         = true;
@@ -353,7 +397,7 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         _validCategories[REASON_OTHER]             = true;
 
         for (uint256 i = 0; i < _lenderAddrs.length; i++) {
-            _addLender(_lenderAddrs[i], _lenderNames[i], _cycles[i]);
+            _addLender(_lenderAddrs[i], _lenderNames[i], _cycles[i], _schedules[i]);
         }
     }
 
@@ -362,17 +406,19 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     // ================================================================
 
     function addLender(
-        address _lenderAddress,
-        string calldata _name,
-        uint256 _cycle
+        address           _lenderAddress,
+        string calldata   _name,
+        uint256           _cycle,
+        RepaymentSchedule _schedule    // [ID-3]
     ) external onlyOwner {
-        _addLender(_lenderAddress, _name, _cycle);
+        _addLender(_lenderAddress, _name, _cycle, _schedule);
     }
 
     function _addLender(
-        address _lenderAddress,
-        string memory _name,
-        uint256 _cycle
+        address           _lenderAddress,
+        string memory     _name,
+        uint256           _cycle,
+        RepaymentSchedule _schedule
     ) internal {
         if (_lenderAddress == address(0))     revert BodaBodaSavings__ZeroAddress();
         if (lenders[_lenderAddress].verified) revert BodaBodaSavings__LenderAlreadyRegistered();
@@ -382,12 +428,13 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
             name:            _name,
             lenderAddress:   _lenderAddress,
             collectionCycle: _cycle,
+            schedule:        _schedule,   // [ID-3]
             verified:        true,
             active:          true
         });
 
         lenderList.push(_lenderAddress);
-        emit LenderAdded(_lenderAddress, _name, _cycle);
+        emit LenderAdded(_lenderAddress, _name, _cycle, _schedule);
     }
 
     function deactivateLender(address _lenderAddress) external onlyOwner {
@@ -402,6 +449,9 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         emit LenderReactivated(_lenderAddress);
     }
 
+    /// @notice Update a lender's collection cycle.
+    /// @dev    [AUD-2] This only affects pots locked AFTER the change. Active pots
+    ///         keep the deadline snapshotted at their own lock time.
     function updateLenderCycle(address _lenderAddress, uint256 _newCycle) external onlyOwner {
         if (!lenders[_lenderAddress].verified) revert BodaBodaSavings__LenderNotFound();
         if (_newCycle == 0)                    revert BodaBodaSavings__InvalidCollectionCycle();
@@ -409,20 +459,14 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         emit LenderCycleUpdated(_lenderAddress, _newCycle);
     }
 
-    /// @notice Returns registered lender addresses with optional pagination. [GAS-9]
-    /// @param offset Starting index (0 for beginning)
-    /// @param limit  Max addresses to return; pass 0 to return all remaining
+    /// @notice Paginated lender list. Pass limit = 0 to return all.
     function getLenders(uint256 offset, uint256 limit)
-        external
-        view
-        returns (address[] memory)
+        external view returns (address[] memory)
     {
         uint256 total = lenderList.length;
         if (offset >= total) return new address[](0);
-
         uint256 remaining = total - offset;
-        uint256 count     = (limit == 0 || limit > remaining) ? remaining : limit;
-
+        uint256 count = (limit == 0 || limit > remaining) ? remaining : limit;
         address[] memory result = new address[](count);
         for (uint256 i = 0; i < count; i++) {
             result[i] = lenderList[offset + i];
@@ -430,43 +474,59 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         return result;
     }
 
-    /// @notice Convenience: returns total number of registered lenders
     function getLenderCount() external view returns (uint256) {
         return lenderList.length;
     }
 
     // ================================================================
-    //                    RIDER REGISTRATION
+    //                    RIDER REGISTRATION  [ID-4]
     // ================================================================
 
-    /// @notice Owner registers a KYC-verified rider.
+    /// @notice Rider self-registers after off-chain KYC approval.
     function registerRider(
-        address _rider,
-        address _lenderAddress,
-        uint256 _loanTarget,
-        bytes32 _verificationHash,
-        uint8   _kycLevel,
-        uint256 _licenseExpiry,
-        bytes32 _kycProvider
-    ) external onlyOwner {
-        if (_rider == address(0))
-            revert BodaBodaSavings__ZeroAddress();
-        if (riders[_rider].registered)
+        string  calldata  _name,
+        uint8             _age,
+        bytes1            _gender,
+        address           _lenderAddress,
+        SplitRatio        _ratio,
+        uint256           _loanTarget,
+        bytes32           _verificationHash,
+        uint8             _kycLevel,
+        uint256           _licenseExpiry,
+        bytes32           _kycProvider
+    ) external {
+        // ── Duplicate check ──
+        if (riders[msg.sender].registered)
             revert BodaBodaSavings__RiderAlreadyRegistered();
-        if (_loanTarget == 0)
-            revert BodaBodaSavings__ZeroLoanTarget();
-        if (_verificationHash == bytes32(0))
-            revert BodaBodaSavings__InvalidVerificationHash();
-        if (_kycLevel < KYC_BASIC || _kycLevel > KYC_PREMIUM)
-            revert BodaBodaSavings__InvalidKycLevel();
+
+        // ── Identity validation [ID-1] ──
+        if (bytes(_name).length == 0)
+            revert BodaBodaSavings__NameRequired();
+        if (_age < 18 || _age > 65)
+            revert BodaBodaSavings__InvalidAge();
+        if (_gender != 0x4d && _gender != 0x46 && _gender != 0x4f)  // 'M', 'F', 'O'
+            revert BodaBodaSavings__InvalidGender();
+
+        // ── Lender validation ──
         if (!lenders[_lenderAddress].verified)
             revert BodaBodaSavings__LenderNotFound();
         if (!lenders[_lenderAddress].active)
             revert BodaBodaSavings__LenderNotActive();
+
+        // ── Financial validation ──
+        if (_loanTarget == 0)
+            revert BodaBodaSavings__ZeroLoanTarget();
+
+        // ── KYC validation ──
+        if (_verificationHash == bytes32(0))
+            revert BodaBodaSavings__InvalidVerificationHash();
+        if (_kycLevel < KYC_BASIC || _kycLevel > KYC_PREMIUM)
+            revert BodaBodaSavings__InvalidKycLevel();
         if (_licenseExpiry <= block.timestamp)
             revert BodaBodaSavings__LicenseExpired();
 
-        riderKYC[_rider] = RiderKYC({
+        // ── Write KYC record ──
+        riderKYC[msg.sender] = RiderKYC({
             verificationHash:  _verificationHash,
             verificationLevel: _kycLevel,
             verified:          true,
@@ -475,11 +535,19 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
             kycProvider:       _kycProvider
         });
 
-        riders[_rider].lenderAddress = _lenderAddress;
-        riders[_rider].loanTarget    = _loanTarget;
-        riders[_rider].registered    = true;
+        // ── Write rider record ──
+        Rider storage r = riders[msg.sender];
+        r.name          = _name;           // [ID-1]
+        r.age           = _age;            // [ID-1]
+        r.gender        = _gender;         // [ID-1]
+        r.lenderAddress = _lenderAddress;
+        r.splitRatio    = _ratio;          // [ID-2]
+        r.loanTarget    = _loanTarget;
+        r.registered    = true;
 
-        emit RiderRegistered(_rider, _lenderAddress, _loanTarget, _kycLevel);
+        emit RiderRegistered(
+            msg.sender, _name, _lenderAddress, _loanTarget, _kycLevel, _ratio
+        );
     }
 
     function updateRiderKYC(
@@ -489,14 +557,11 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         uint256 _newLicenseExpiry,
         bytes32 _kycProvider
     ) external onlyOwner {
-        if (!riders[_rider].registered)
-            revert BodaBodaSavings__RiderNotRegistered();
-        if (_newHash == bytes32(0))
-            revert BodaBodaSavings__InvalidVerificationHash();
+        if (!riders[_rider].registered)       revert BodaBodaSavings__RiderNotRegistered();
+        if (_newHash == bytes32(0))            revert BodaBodaSavings__InvalidVerificationHash();
         if (_newLevel < KYC_BASIC || _newLevel > KYC_PREMIUM)
-            revert BodaBodaSavings__InvalidKycLevel();
-        if (_newLicenseExpiry <= block.timestamp)
-            revert BodaBodaSavings__LicenseExpired();
+                                               revert BodaBodaSavings__InvalidKycLevel();
+        if (_newLicenseExpiry <= block.timestamp) revert BodaBodaSavings__LicenseExpired();
 
         RiderKYC storage kyc = riderKYC[_rider];
         kyc.verificationHash  = _newHash;
@@ -508,46 +573,76 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         emit RiderKYCUpdated(_rider, _newLevel);
     }
 
-    /// @notice Owner adjusts a rider's loan target (restructuring). [LOG-13]
-    /// @param _rider      Rider whose target to update
-    /// @param _newTarget  New total loan amount — must be >= loanRepaid to date
     function updateLoanTarget(address _rider, uint256 _newTarget) external onlyOwner {
         if (!riders[_rider].registered) revert BodaBodaSavings__RiderNotRegistered();
         if (_newTarget == 0)            revert BodaBodaSavings__ZeroLoanTarget();
 
         Rider storage r = riders[_rider];
-        // Prevent setting target below already-repaid amount
         if (_newTarget < r.loanRepaid)  revert BodaBodaSavings__NewTargetBelowRepaid();
 
         uint256 old = r.loanTarget;
         r.loanTarget = _newTarget;
-
         emit LoanTargetUpdated(_rider, old, _newTarget);
     }
 
     // ================================================================
-    //                          DEPOSIT
+    //                     DEPOSIT FUNCTIONS
     // ================================================================
 
-    /// @notice Rider deposits stablecoin. Split 50/50 savings / loan.
-    ///         Caller must approve this contract on the stablecoin first.
+    /// @notice Standard deposit — caller must approve this contract first.
     function deposit(uint256 amount)
         external
-        nonReentrant    // [SEC-1]
+        nonReentrant
         onlyVerified
         whenNotPaused
     {
         if (amount == 0) revert BodaBodaSavings__ZeroDeposit();
 
-        // Pull funds first (Checks-Effects-Interactions)
-        bool ok = stablecoin.transferFrom(msg.sender, address(this), amount);
-        if (!ok) revert BodaBodaSavings__TransferFailed();
+        // [AUD-1] SafeERC20 — reverts on failure / non-standard tokens.
+        stablecoin.safeTransferFrom(msg.sender, address(this), amount);
 
-        uint256 half     = amount / 2;
-        uint256 loanPart = amount - half;   // odd amounts round to loan side
+        _applyDeposit(msg.sender, amount);
+    }
 
-        Rider storage r = riders[msg.sender];
-        r.savingsBalance += half;
+    /// @notice One-click deposit using EIP-2612 permit — no separate approve tx. [ID-5]
+    function depositWithPermit(
+        uint256 amount,
+        uint256 deadline,
+        uint8   v,
+        bytes32 r,
+        bytes32 s
+    )
+        external
+        nonReentrant
+        onlyVerified
+        whenNotPaused
+    {
+        if (amount == 0) revert BodaBodaSavings__ZeroDeposit();
+
+        // Silent approval — emits no on-chain approve tx, just uses signature.
+        IERC20Permit(address(stablecoin)).permit(
+            msg.sender,
+            address(this),
+            amount,
+            deadline,
+            v, r, s
+        );
+
+        // [AUD-1] SafeERC20
+        stablecoin.safeTransferFrom(msg.sender, address(this), amount);
+
+        _applyDeposit(msg.sender, amount);
+    }
+
+    /// @dev Internal: applies the split and updates rider balances.
+    function _applyDeposit(address _rider, uint256 amount) internal {
+        (uint256 savingsPct,) = _getSplitPercentages(riders[_rider].splitRatio);
+
+        uint256 savingsPart = (amount * savingsPct) / 100;
+        uint256 loanPart    = amount - savingsPart;   // remainder goes to loan
+
+        Rider storage r = riders[_rider];
+        r.savingsBalance += savingsPart;
         r.loanBalance    += loanPart;
         r.totalDeposited += amount;
 
@@ -555,8 +650,25 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         r.lastDepositAt = block.timestamp;
 
         totalLoanCredits += loanPart;
+        totalSavingsHeld += savingsPart;   // [AUD-4]
 
-        emit Deposit(msg.sender, amount, half, loanPart, block.timestamp);
+        emit Deposit(_rider, amount, savingsPart, loanPart, block.timestamp);
+    }
+
+    /// @dev Returns (savingsPct, loanPct) for a given SplitRatio. [ID-2]
+    ///      [AUD-5] Reverts on an unrecognised ratio rather than silently
+    ///      returning a default, eliminating the latent 70/30-vs-50/50 mismatch.
+    function _getSplitPercentages(SplitRatio ratio)
+        internal
+        pure
+        returns (uint256 savingsPct, uint256 loanPct)
+    {
+        if (ratio == SplitRatio.SPLIT_70_30) return (70, 30);
+        if (ratio == SplitRatio.SPLIT_60_40) return (60, 40);
+        if (ratio == SplitRatio.SPLIT_50_50) return (50, 50);
+        if (ratio == SplitRatio.SPLIT_40_60) return (40, 60);
+        if (ratio == SplitRatio.SPLIT_30_70) return (30, 70);
+        revert BodaBodaSavings__InvalidSplitRatio();
     }
 
     // ================================================================
@@ -564,11 +676,11 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     // ================================================================
 
     /// @notice Rider locks loanBalance into the pot to schedule repayment.
-    /// @param amount         Amount to lock from loanBalance
-    /// @param intendedPayAt  Rider's declared intended pay date — emitted only [LOG-12]
+    /// @dev    [AUD-2] The auto-settle deadline is snapshotted into r.potDeadline
+    ///         here. A later updateLenderCycle() will NOT change it.
     function lockToPot(uint256 amount, uint256 intendedPayAt)
         external
-        nonReentrant    // [SEC-1]
+        nonReentrant
         onlyVerified
         whenNotPaused
     {
@@ -576,23 +688,20 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
 
         Rider storage r = riders[msg.sender];
 
-        if (r.potActive)
-            revert BodaBodaSavings__PotAlreadyActive();
-        if (r.loanBalance < amount)
-            revert BodaBodaSavings__InsufficientLoanBalance();
-        if (r.loanRepaid >= r.loanTarget)
-            revert BodaBodaSavings__LoanAlreadyCleared();
+        if (r.potActive)                      revert BodaBodaSavings__PotAlreadyActive();
+        if (r.loanBalance < amount)           revert BodaBodaSavings__InsufficientLoanBalance();
+        if (r.loanRepaid >= r.loanTarget)     revert BodaBodaSavings__LoanAlreadyCleared();
+
+        uint256 cycle    = lenders[r.lenderAddress].collectionCycle;
+        uint256 deadline = block.timestamp + cycle;
 
         r.loanBalance -= amount;
         r.potBalance   = amount;
         r.potLockedAt  = block.timestamp;
+        r.potDeadline  = deadline;          // [AUD-2] snapshot
         r.potActive    = true;
 
-        totalLockedInPots += amount;   // [LOG-10]
-
-        // [GAS-8] cache cycle into local variable
-        uint256 cycle    = lenders[r.lenderAddress].collectionCycle;
-        uint256 deadline = block.timestamp + cycle;
+        totalLockedInPots += amount;
 
         emit PotLocked(msg.sender, amount, block.timestamp, intendedPayAt, deadline);
     }
@@ -600,7 +709,7 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     /// @notice Rider voluntarily releases their pot before the deadline.
     function releaseFromPot()
         external
-        nonReentrant    // [SEC-1]
+        nonReentrant
         onlyVerified
         whenNotPaused
     {
@@ -613,19 +722,13 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         emit PotReleasedByRider(msg.sender, amount, block.timestamp);
     }
 
-    /// @notice Anyone can settle an expired pot. Fully autonomous.
-    function settleExpiredPot(address _rider)
-        external
-        nonReentrant    // [SEC-1]
-    {
+    /// @notice Anyone can settle an expired pot — fully autonomous.
+    /// @dev    [AUD-2] Settles against the snapshotted r.potDeadline.
+    function settleExpiredPot(address _rider) external nonReentrant {
         Rider storage r = riders[_rider];
         if (!r.potActive) revert BodaBodaSavings__NoPotActive();
 
-        // [GAS-8] cache cycle
-        uint256 cycle    = lenders[r.lenderAddress].collectionCycle;
-        uint256 deadline = r.potLockedAt + cycle;
-
-        if (block.timestamp < deadline)
+        if (block.timestamp < r.potDeadline)
             revert BodaBodaSavings__PotDeadlineNotReached();
 
         uint256 amount = r.potBalance;
@@ -634,18 +737,10 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         emit PotAutoSettled(_rider, amount, block.timestamp);
     }
 
-    /// @dev Transfers pot to lender, updates accounting, records history.
-    ///      [LOG-11] Caps settlement at remaining loan balance; any excess
-    ///               is returned to loanBalance — no rider overpayment.
-    ///      [SEC-1]  All state mutated before the external transfer call (CEI).
-    function _settlePot(
-        address _rider,
-        Rider storage r,
-        bool autoSettled
-    ) internal {
+    /// @dev CEI-safe pot settlement. Caps at remaining loan balance, returns excess.
+    function _settlePot(address _rider, Rider storage r, bool autoSettled) internal {
         uint256 amount = r.potBalance;
 
-        // [LOG-11] Cap at remaining loan balance to prevent overpayment
         uint256 remaining = r.loanTarget > r.loanRepaid
             ? r.loanTarget - r.loanRepaid
             : 0;
@@ -653,14 +748,12 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         uint256 toSettle = amount > remaining ? remaining : amount;
         uint256 excess   = amount - toSettle;
 
-        // ── Effects (all state changes before external call — CEI) ──
-        r.loanRepaid       += toSettle;
-        totalLoanSettled   += toSettle;
-        totalLockedInPots  -= amount;   // [LOG-10] full locked amount released
+        // ── Effects ──
+        r.loanRepaid      += toSettle;
+        totalLoanSettled  += toSettle;
+        totalLockedInPots -= amount;
 
-        if (excess > 0) {
-            r.loanBalance += excess;    // return overage to rider's loan balance
-        }
+        if (excess > 0) r.loanBalance += excess;
 
         _potHistory[_rider].push(PotRecord({
             amount:      toSettle,
@@ -669,17 +762,16 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
             autoSettled: autoSettled
         }));
 
-        // Clear pot state
         r.potBalance  = 0;
         r.potLockedAt = 0;
+        r.potDeadline = 0;            // [AUD-2] clear snapshot
         r.potActive   = false;
 
-        // ── Interaction (external call last) ──
-        bool ok = stablecoin.transfer(r.lenderAddress, toSettle);
-        if (!ok) revert BodaBodaSavings__TransferFailed();
+        // ── Interaction ──
+        // [AUD-1] SafeERC20
+        stablecoin.safeTransfer(r.lenderAddress, toSettle);
 
-        if (excess > 0) emit PotExcessReturned(_rider, excess);
-
+        if (excess > 0)  emit PotExcessReturned(_rider, excess);
         if (r.loanRepaid >= r.loanTarget && r.loanTarget > 0) {
             emit LoanCleared(_rider, r.loanRepaid, block.timestamp);
         }
@@ -689,28 +781,26 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     //               SAVINGS WITHDRAWAL  (3-step approval flow)
     // ================================================================
 
-    /// @notice Step 1 — Rider submits a savings withdrawal request.
+    /// @notice Step 1 — Rider submits a withdrawal request.
     function requestWithdrawal(uint256 amount, bytes32 category)
         external
-        nonReentrant    // [SEC-1]
+        nonReentrant
         onlyVerified
         whenNotPaused
     {
-        if (amount == 0)
-            revert BodaBodaSavings__ZeroWithdrawAmount();
-        if (!_validCategories[category])            // [GAS-7] O(1) lookup
-            revert BodaBodaSavings__InvalidWithdrawalCategory();
+        if (amount == 0)                       revert BodaBodaSavings__ZeroWithdrawAmount();
+        if (!_validCategories[category])       revert BodaBodaSavings__InvalidWithdrawalCategory();
 
         Rider storage r = riders[msg.sender];
-        if (r.savingsBalance < amount)
-            revert BodaBodaSavings__InsufficientSavings();
+        if (r.savingsBalance < amount)         revert BodaBodaSavings__InsufficientSavings();
 
         WithdrawalRequest storage req = withdrawalRequests[msg.sender];
         if (req.status == WithdrawalStatus.Pending ||
             req.status == WithdrawalStatus.Approved)
             revert BodaBodaSavings__WithdrawalAlreadyPending();
 
-        // Lock amount immediately — prevents double-spend
+        // Amount leaves spendable savings but is still "held" by the contract
+        // on the rider's behalf — totalSavingsHeld is unchanged here. [AUD-4]
         r.savingsBalance -= amount;
 
         withdrawalRequests[msg.sender] = WithdrawalRequest({
@@ -724,11 +814,10 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         emit WithdrawalRequested(msg.sender, amount, category, block.timestamp);
     }
 
-    /// @notice Step 2a — Owner approves. Rider can claim after WITHDRAWAL_DELAY.
+    /// @notice Step 2a — Owner approves.
     function approveWithdrawal(address _rider) external onlyOwner {
         WithdrawalRequest storage req = withdrawalRequests[_rider];
-        if (req.status != WithdrawalStatus.Pending)
-            revert BodaBodaSavings__NoWithdrawalPending();
+        if (req.status != WithdrawalStatus.Pending) revert BodaBodaSavings__NoWithdrawalPending();
 
         req.approvedAt = block.timestamp;
         req.status     = WithdrawalStatus.Approved;
@@ -736,26 +825,64 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         emit WithdrawalApproved(_rider, req.amount, block.timestamp);
     }
 
-    /// @notice Step 2b — Owner denies. Amount returned to savingsBalance.
-    ///         [SEC-5] Full struct deleted to clear stale data.
+    /// @notice Step 2b — Owner denies a PENDING request. Amount returned to savings.
     function denyWithdrawal(address _rider) external onlyOwner {
         WithdrawalRequest storage req = withdrawalRequests[_rider];
-        if (req.status != WithdrawalStatus.Pending)
-            revert BodaBodaSavings__NoWithdrawalPending();
+        if (req.status != WithdrawalStatus.Pending) revert BodaBodaSavings__NoWithdrawalPending();
 
         uint256 amount = req.amount;
         riders[_rider].savingsBalance += amount;
 
-        delete withdrawalRequests[_rider];  // [SEC-5] full struct reset
+        delete withdrawalRequests[_rider];
 
         emit WithdrawalDenied(_rider, amount, block.timestamp);
     }
 
+    /// @notice [AUD-3] Owner revokes an ALREADY-APPROVED request, returning the
+    ///         funds to the rider's spendable savings. Closes the stuck-state where
+    ///         an approved-but-unclaimable request could trap funds (e.g. if the
+    ///         rider can no longer claim for some reason).
+    function revokeApprovedWithdrawal(address _rider) external onlyOwner {
+        WithdrawalRequest storage req = withdrawalRequests[_rider];
+        if (req.status != WithdrawalStatus.Approved) revert BodaBodaSavings__WithdrawalNotApproved();
+
+        uint256 amount = req.amount;
+        riders[_rider].savingsBalance += amount;
+
+        delete withdrawalRequests[_rider];
+
+        emit WithdrawalDenied(_rider, amount, block.timestamp);
+    }
+
+    /// @notice [AUD-3] Rider cancels their OWN pending or approved request and
+    ///         returns the amount to spendable savings. Uses onlyRegistered so a
+    ///         rider whose KYC/licence has lapsed can still recover their money.
+    function cancelWithdrawal()
+        external
+        nonReentrant
+        onlyRegistered
+    {
+        WithdrawalRequest storage req = withdrawalRequests[msg.sender];
+        if (req.status != WithdrawalStatus.Pending &&
+            req.status != WithdrawalStatus.Approved)
+            revert BodaBodaSavings__NoWithdrawalToCancel();
+
+        uint256 amount = req.amount;
+        riders[msg.sender].savingsBalance += amount;
+
+        delete withdrawalRequests[msg.sender];
+
+        emit WithdrawalCancelled(msg.sender, amount, block.timestamp);
+    }
+
     /// @notice Step 3 — Rider claims after approval + WITHDRAWAL_DELAY.
+    /// @dev    [AUD-3] Uses onlyRegistered, NOT onlyVerified. Savings are the
+    ///         rider's own money; returning them must not be blocked by an
+    ///         expired licence or KYC lapse that occurs during the delay window.
     function claimWithdrawal()
         external
-        nonReentrant    // [SEC-1]
-        onlyVerified
+        nonReentrant
+        onlyRegistered
         whenNotPaused
     {
         WithdrawalRequest storage req = withdrawalRequests[msg.sender];
@@ -768,10 +895,12 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         bytes32 category = req.category;
         uint256 reqAt    = req.requestedAt;
 
-        // ── Effects before interaction (CEI) ──
         Rider storage r = riders[msg.sender];
         r.totalWithdrawn  += amount;
         r.withdrawalCount += 1;
+
+        // [AUD-4] Money actually leaves the contract now.
+        totalSavingsHeld -= amount;
 
         _withdrawalHistory[msg.sender].push(WithdrawalRecord({
             amount:      amount,
@@ -780,11 +909,10 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
             claimedAt:   block.timestamp
         }));
 
-        delete withdrawalRequests[msg.sender];  // consistent with denyWithdrawal
+        delete withdrawalRequests[msg.sender];
 
-        // ── Interaction ──
-        bool ok = stablecoin.transfer(msg.sender, amount);
-        if (!ok) revert BodaBodaSavings__TransferFailed();
+        // [AUD-1] SafeERC20
+        stablecoin.safeTransfer(msg.sender, amount);
 
         emit WithdrawalClaimed(msg.sender, amount, block.timestamp);
     }
@@ -792,6 +920,72 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     // ================================================================
     //                      VIEW FUNCTIONS
     // ================================================================
+
+    /// @notice Full rider profile — identity + lender info + split ratio. [ID-6]
+    function getRiderProfile(address _rider)
+        external
+        view
+        returns (
+            string  memory name,
+            uint8          age,
+            bytes1         gender,
+            bool           registered,
+            address        lenderAddress,
+            string  memory lenderName,
+            RepaymentSchedule lenderSchedule,
+            SplitRatio     splitRatio,
+            uint256        loanTarget
+        )
+    {
+        Rider  storage r = riders[_rider];
+        Lender storage l = lenders[r.lenderAddress];
+        return (
+            r.name,
+            r.age,
+            r.gender,
+            r.registered,
+            r.lenderAddress,
+            l.name,
+            l.schedule,
+            r.splitRatio,
+            r.loanTarget
+        );
+    }
+
+    /// @notice Full analytics snapshot — powers the financial dashboard.
+    /// @dev    [AUD-2] potDeadline now returns the snapshotted absolute deadline.
+    function getRiderAnalytics(address _rider)
+        external
+        view
+        returns (
+            uint256 savingsBalance,
+            uint256 loanBalance,
+            uint256 totalDeposited,
+            uint256 totalWithdrawn,
+            uint256 withdrawalCount,
+            uint256 lastDepositAt,
+            uint256 firstDepositAt,
+            bool    potActive,
+            uint256 potBalance,
+            uint256 potLockedAt,
+            uint256 potDeadline
+        )
+    {
+        Rider storage r = riders[_rider];
+        return (
+            r.savingsBalance,
+            r.loanBalance,
+            r.totalDeposited,
+            r.totalWithdrawn,
+            r.withdrawalCount,
+            r.lastDepositAt,
+            r.firstDepositAt,
+            r.potActive,
+            r.potBalance,
+            r.potLockedAt,
+            r.potActive ? r.potDeadline : 0    // [AUD-2]
+        );
+    }
 
     function getLoanStatus(address _rider)
         external
@@ -816,43 +1010,6 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         progressBps   = r.loanTarget > 0
             ? (r.loanRepaid * 10_000) / r.loanTarget
             : 0;
-    }
-
-    /// @notice Full analytics snapshot — powers the rider dashboard.
-    ///         [LOG-12] potIntendedPayAt removed (no longer stored on-chain).
-    function getRiderAnalytics(address _rider)
-        external
-        view
-        returns (
-            uint256 savingsBalance,
-            uint256 loanBalance,
-            uint256 totalDeposited,
-            uint256 totalWithdrawn,
-            uint256 withdrawalCount,
-            uint256 lastDepositAt,
-            uint256 firstDepositAt,
-            bool    potActive,
-            uint256 potBalance,
-            uint256 potLockedAt,
-            uint256 potDeadline
-        )
-    {
-        Rider storage r  = riders[_rider];
-        // [GAS-8] cache cycle
-        uint256 cycle    = lenders[r.lenderAddress].collectionCycle;
-        return (
-            r.savingsBalance,
-            r.loanBalance,
-            r.totalDeposited,
-            r.totalWithdrawn,
-            r.withdrawalCount,
-            r.lastDepositAt,
-            r.firstDepositAt,
-            r.potActive,
-            r.potBalance,
-            r.potLockedAt,
-            r.potActive ? r.potLockedAt + cycle : 0
-        );
     }
 
     function getRiderKYC(address _rider)
@@ -917,21 +1074,10 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         return _potHistory[_rider];
     }
 
-    /// @notice Loan-side deposits not yet settled to any lender.
-    ///         = totalLoanCredits − totalLoanSettled − totalLockedInPots
-    ///
-    ///         Semantics [LOG-10]:
-    ///           totalLoanCredits   — all loan-side deposit inflows (lifetime)
-    ///           totalLoanSettled   — confirmed payments forwarded to lenders
-    ///           totalLockedInPots  — committed but not yet forwarded (in active pots)
-    ///
-    ///         This value represents loanBalance amounts sitting idle across
-    ///         all riders that have neither been locked nor settled yet.
     function getIdleLoanBalance() external view returns (uint256) {
         return totalLoanCredits - totalLoanSettled - totalLockedInPots;
     }
 
-    /// @notice Total currently locked across all active pots. [LOG-10]
     function getLockedPotTotal() external view returns (uint256) {
         return totalLockedInPots;
     }
@@ -949,40 +1095,51 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
         view
         returns (
             string  memory name,
-            uint256 collectionCycle,
-            bool    verified,
-            bool    active
+            uint256        collectionCycle,
+            RepaymentSchedule schedule,     // [ID-3]
+            bool           verified,
+            bool           active
         )
     {
         Lender storage l = lenders[_lenderAddress];
-        return (l.name, l.collectionCycle, l.verified, l.active);
+        return (l.name, l.collectionCycle, l.schedule, l.verified, l.active);
     }
 
     // ================================================================
     //                      ADMIN FUNCTIONS
     // ================================================================
 
-    function pause() external onlyOwner {
-        _pause();
-    }
+    function pause() external onlyOwner { _pause(); }
 
-    function unpause() external onlyOwner {
-        _unpause();
-    }
+    function unpause() external onlyOwner { _unpause(); }
 
-    /// @notice Update stablecoin address.
-    ///         [SEC-2] Requires zero contract balance — all funds must be
-    ///         withdrawn or settled before the token can be swapped.
-    ///         [SEC-14] Validates decimals() on the new contract.
+    /// @notice Swap stablecoin address.
+    /// @dev    [AUD-4] Requires that the contract holds no obligations at all —
+    ///         every internal aggregate counter must be zero, not just the live
+    ///         token balance (dust or in-flight withdrawals could otherwise allow
+    ///         a swap that mis-denominates rider balances). Also enforces that the
+    ///         new token reports the SAME decimals as the old one, since all
+    ///         internal balances are stored in token-native units.
     function setStablecoin(address _stablecoin) external onlyOwner {
         if (_stablecoin == address(0))
             revert BodaBodaSavings__StablecoinCannotBeZeroAddress();
 
-        // [SEC-14] validate interface
-        (bool ok,) = _stablecoin.staticcall(abi.encodeWithSignature("decimals()"));
-        if (!ok) revert BodaBodaSavings__InvalidStablecoinContract();
+        // New token must implement decimals().
+        (bool ok, bytes memory data) =
+            _stablecoin.staticcall(abi.encodeWithSignature("decimals()"));
+        if (!ok || data.length < 32) revert BodaBodaSavings__InvalidStablecoinContract();
 
-        // [SEC-2] refuse swap while funds are held — prevents accounting mismatch
+        // Decimals must match the existing token. [AUD-4]
+        uint8 newDecimals = abi.decode(data, (uint8));
+        uint8 oldDecimals = IERC20Metadata(address(stablecoin)).decimals();
+        if (newDecimals != oldDecimals) revert BodaBodaSavings__DecimalsMismatch();
+
+        // No outstanding obligations in internal accounting. [AUD-4]
+        if (totalSavingsHeld != 0 || totalLockedInPots != 0 ||
+            (totalLoanCredits - totalLoanSettled) != 0)
+            revert BodaBodaSavings__OutstandingAccounting();
+
+        // Belt-and-braces: live balance must also be zero.
         if (stablecoin.balanceOf(address(this)) != 0)
             revert BodaBodaSavings__ContractBalanceMustBeZero();
 
@@ -992,18 +1149,13 @@ contract BodaBodaSavings is Ownable, Pausable, ReentrancyGuard {
     }
 
     /// @notice Recover accidentally sent non-stablecoin ERC20 tokens.
-    function recoverERC20(
-        address _token,
-        address _to,
-        uint256 _amount
-    ) external onlyOwner {
+    function recoverERC20(address _token, address _to, uint256 _amount) external onlyOwner {
         if (_to    == address(0)) revert BodaBodaSavings__ZeroAddress();
         if (_token == address(0)) revert BodaBodaSavings__ZeroAddressToken();
-        if (_token == address(stablecoin))
-            revert BodaBodaSavings__CannotRecoverStablecoin();
+        if (_token == address(stablecoin)) revert BodaBodaSavings__CannotRecoverStablecoin();
 
-        bool ok = IERC20(_token).transfer(_to, _amount);
-        if (!ok) revert BodaBodaSavings__TransferFailed();
+        // [AUD-1] SafeERC20
+        IERC20(_token).safeTransfer(_to, _amount);
 
         emit ERC20Recovered(_token, _to, _amount);
     }

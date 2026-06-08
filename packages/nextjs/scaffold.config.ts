@@ -22,7 +22,7 @@ const scaffoldConfig = {
     // Base Sepolia RPC (you can also use Alchemy or Infura here)
     [chains.baseSepolia.id]: process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC || "https://sepolia.base.org",
   },
-  walletConnectProjectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || "3a8170812b534d0ff9d794f19a901d64",
+  walletConnectProjectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || "2848f2a44bcedd5fe32370769a278f09",
   onlyLocalBurnerWallet: true,
 } as const satisfies ScaffoldConfig;
 

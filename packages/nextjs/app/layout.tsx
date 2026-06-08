@@ -6,7 +6,8 @@ import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
 
 export const metadata = getMetadata({
   title: "BodaSave — Smart Savings for Bodaboda Riders",
-  description: "Save while you repay. BodaSave splits your daily earnings into personal savings and loan repayment — built on Base.",
+  description:
+    "Save while you repay. BodaSave splits your daily earnings into personal savings and loan repayment — built on Base.",
   imageRelativePath: "/thumbnail.png",
 });
 

@@ -37,8 +37,7 @@ pgnTestnet       = "https://sepolia.publicgoods.network"
 [etherscan]
 polygonMumbai = { key = "${ETHERSCAN_API_KEY}" }
 sepolia       = { key = "${ETHERSCAN_API_KEY}" }
-baseSepolia   = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }
-
+baseSepolia = { key = "${ETHERSCAN_API_KEY}" }
 
 [fmt]
 line_length    = 120
