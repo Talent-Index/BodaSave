@@ -24,3 +24,6 @@ dist
 .vercel
 packages/foundry/.env.local
 packages/foundry/.env
+packages/foundry/.env.local
+packages/nextjs/.env.local
+packages/nextjs/.intasend-ledger.json

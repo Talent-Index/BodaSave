@@ -6,14 +6,24 @@ import { BodaBodaSavings } from "../src/BodaSavings.sol";
 import { MockUSDC }        from "../src/MockUSDC.sol";
 import { Ownable }         from "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @notice Test suite for BodaBodaSavings V3.1
+/// @notice Test suite for BodaBodaSavings v4 (scheduled auto-settlement).
+///
+///         Major v4 differences vs the V3.1 suite:
+///         • The pot (lockToPot / releaseFromPot / settleExpiredPot / getLockedPotTotal)
+///           is gone — Section 6 now exercises settleLoanRepayment() instead.
+///         • getRiderProfile() and getRiderAnalytics() return named memory structs
+///           (RiderProfileView / RiderAnalyticsView), not positional tuples.
+///         • New coverage: cycle-change-applies-to-existing-riders, loan-cleared
+///           routing, split rounding accumulator, tiered auto-approval, solvency
+///           invariant, Ownable2Step, and fee-on-transfer crediting (SEC-B).
 contract TestBodaSavings is Test {
 
     BodaBodaSavings bodaSavings;
     MockUSDC        mockUSDC;
 
-    address constant OWNER    = address(0xA0);
-    address constant STRANGER = address(0xC0);
+    address constant OWNER     = address(0xA0);
+    address constant STRANGER  = address(0xC0);
+    address constant NEW_OWNER = address(0xA1);
 
     uint256 constant USER_PK = 0xBEEF;
     address          USER;
@@ -33,7 +43,7 @@ contract TestBodaSavings is Test {
 
     string  constant RIDER_NAME   = "John Kamau";
     uint8   constant RIDER_AGE    = 32;
-    bytes1  constant RIDER_GENDER = 0x4d;
+    bytes1  constant RIDER_GENDER = bytes1(0x4d);   // 'M'
 
     uint8 constant KYC_BASIC_LEVEL   = 1;
     uint8 constant KYC_FULL_LEVEL    = 2;
@@ -41,7 +51,6 @@ contract TestBodaSavings is Test {
 
     bytes32 constant REASON_MEDICAL_VAL = "MEDICAL";
 
-    // setUp warps to this exact timestamp
     uint256 constant SETUP_TIMESTAMP = 1_700_000_000;
 
     function setUp() public {
@@ -51,37 +60,17 @@ contract TestBodaSavings is Test {
         licenseExpiry = block.timestamp + 365 days;
 
         vm.startPrank(OWNER);
-
         mockUSDC = new MockUSDC(20_000_000e6, OWNER);
 
-        address[] memory lenderAddrs = new address[](3);
-        lenderAddrs[0] = LENDER_WEEKLY;
-        lenderAddrs[1] = LENDER_MONTHLY;
-        lenderAddrs[2] = LENDER_DAILY;
-
-        string[] memory lenderNames = new string[](3);
-        lenderNames[0] = "Mwanga Haba SACCO";
-        lenderNames[1] = "Faulu MFB";
-        lenderNames[2] = "Kenya Women MFI";
-
-        uint256[] memory cycles = new uint256[](3);
-        cycles[0] = 7 days;
-        cycles[1] = 30 days;
-        cycles[2] = 1 days;
-
-        BodaBodaSavings.RepaymentSchedule[] memory schedules =
-            new BodaBodaSavings.RepaymentSchedule[](3);
-        schedules[0] = BodaBodaSavings.RepaymentSchedule.WEEKLY;
-        schedules[1] = BodaBodaSavings.RepaymentSchedule.MONTHLY;
-        schedules[2] = BodaBodaSavings.RepaymentSchedule.WEEKLY;
+        (
+            address[] memory lenderAddrs,
+            string[]  memory lenderNames,
+            uint256[] memory cycles,
+            BodaBodaSavings.RepaymentSchedule[] memory schedules
+        ) = _standardLenders();
 
         bodaSavings = new BodaBodaSavings(
-            address(mockUSDC),
-            lenderAddrs,
-            lenderNames,
-            cycles,
-            schedules,
-            OWNER
+            address(mockUSDC), lenderAddrs, lenderNames, cycles, schedules, OWNER
         );
 
         mockUSDC.ownerMint(USER, INITIAL_BALANCE);
@@ -98,6 +87,44 @@ contract TestBodaSavings is Test {
 
         vm.prank(USER);
         mockUSDC.approve(address(bodaSavings), type(uint256).max);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //                          HELPERS
+    // ════════════════════════════════════════════════════════════════
+
+    function _standardLenders()
+        internal
+        pure
+        returns (
+            address[] memory addrs,
+            string[]  memory names,
+            uint256[] memory cycles,
+            BodaBodaSavings.RepaymentSchedule[] memory schedules
+        )
+    {
+        addrs  = new address[](3);
+        names  = new string[](3);
+        cycles = new uint256[](3);
+        schedules = new BodaBodaSavings.RepaymentSchedule[](3);
+
+        addrs[0] = LENDER_WEEKLY;  names[0] = "Mwanga Haba SACCO"; cycles[0] = 7 days;
+        addrs[1] = LENDER_MONTHLY; names[1] = "Faulu MFB";         cycles[1] = 30 days;
+        addrs[2] = LENDER_DAILY;   names[2] = "Kenya Women MFI";   cycles[2] = 1 days;
+
+        schedules[0] = BodaBodaSavings.RepaymentSchedule.WEEKLY;
+        schedules[1] = BodaBodaSavings.RepaymentSchedule.MONTHLY;
+        schedules[2] = BodaBodaSavings.RepaymentSchedule.WEEKLY;
+    }
+
+    function _deployWith(address token) internal returns (BodaBodaSavings) {
+        (
+            address[] memory a,
+            string[]  memory n,
+            uint256[] memory c,
+            BodaBodaSavings.RepaymentSchedule[] memory s
+        ) = _standardLenders();
+        return new BodaBodaSavings(token, a, n, c, s, OWNER);
     }
 
     function _signPermit(
@@ -117,11 +144,9 @@ contract TestBodaSavings is Test {
                 signer, spender, value, nonce, deadline
             )
         );
-
         bytes32 digest = keccak256(
             abi.encodePacked("\x19\x01", mockUSDC.DOMAIN_SEPARATOR(), structHash)
         );
-
         (v, r, s) = vm.sign(signerPk, digest);
     }
 
@@ -145,11 +170,15 @@ contract TestBodaSavings is Test {
         mockUSDC.approve(address(bodaSavings), type(uint256).max);
     }
 
-    function _depositAndLock(uint256 lockAmount) internal {
-        vm.prank(USER);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-        vm.prank(USER);
-        bodaSavings.lockToPot(lockAmount, block.timestamp + 3 days);
+    /// @dev Warp just past a rider's next scheduled settlement.
+    function _warpPastSettlement(address rider) internal {
+        vm.warp(bodaSavings.getNextSettlementDue(rider) + 1);
+    }
+
+    function _analytics(address rider)
+        internal view returns (BodaBodaSavings.RiderAnalyticsView memory)
+    {
+        return bodaSavings.getRiderAnalytics(rider);
     }
 
     function _depositAndRequestWithdrawal(uint256 withdrawAmount) internal {
@@ -159,20 +188,28 @@ contract TestBodaSavings is Test {
         bodaSavings.requestWithdrawal(withdrawAmount, REASON_MEDICAL_VAL);
     }
 
-    // ────────────────────────────────────────────────────────────────
+    /// @dev Registers a rider, deposits enough to exceed a small loan target, settles,
+    ///      and returns the rider in a loan-cleared state. (target 50e6, 50/50 split)
+    function _setupClearedRider() internal returns (address rider) {
+        rider = address(0xC1EA4);
+        _registerRider(rider, LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50, 50e6);
+        vm.prank(rider);
+        bodaSavings.deposit(160e6);              // savings 80e6, loan 80e6
+        _warpPastSettlement(rider);
+        bodaSavings.settleLoanRepayment(rider);  // pays 50e6, 30e6 excess -> savings
+    }
+
+    // ════════════════════════════════════════════════════════════════
     //                    1. CONSTRUCTOR TESTS
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
 
     function testConstructorRevertsIfStablecoinZeroAddress() public {
-        address[] memory addrs  = new address[](1);
-        string[]  memory names  = new string[](1);
-        uint256[] memory cycs   = new uint256[](1);
-        BodaBodaSavings.RepaymentSchedule[] memory scheds =
-            new BodaBodaSavings.RepaymentSchedule[](1);
-        addrs[0]  = LENDER_WEEKLY;
-        names[0]  = "Test";
-        cycs[0]   = 7 days;
-        scheds[0] = BodaBodaSavings.RepaymentSchedule.WEEKLY;
+        (
+            address[] memory addrs,
+            string[]  memory names,
+            uint256[] memory cycs,
+            BodaBodaSavings.RepaymentSchedule[] memory scheds
+        ) = _standardLenders();
 
         vm.expectRevert(
             BodaBodaSavings.BodaBodaSavings__StablecoinCannotBeZeroAddress.selector
@@ -187,9 +224,21 @@ contract TestBodaSavings is Test {
         BodaBodaSavings.RepaymentSchedule[] memory scheds =
             new BodaBodaSavings.RepaymentSchedule[](0);
 
-        vm.expectRevert(
-            BodaBodaSavings.BodaBodaSavings__NoLendersProvided.selector
-        );
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__NoLendersProvided.selector);
+        new BodaBodaSavings(address(mockUSDC), addrs, names, cycs, scheds, OWNER);
+    }
+
+    function testConstructorRevertsIfArrayLengthMismatch() public {
+        address[] memory addrs  = new address[](2);
+        string[]  memory names  = new string[](1);
+        uint256[] memory cycs   = new uint256[](2);
+        BodaBodaSavings.RepaymentSchedule[] memory scheds =
+            new BodaBodaSavings.RepaymentSchedule[](2);
+        addrs[0] = LENDER_WEEKLY; addrs[1] = LENDER_MONTHLY;
+        names[0] = "Only one";
+        cycs[0] = 7 days; cycs[1] = 30 days;
+
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__ArrayLengthMismatch.selector);
         new BodaBodaSavings(address(mockUSDC), addrs, names, cycs, scheds, OWNER);
     }
 
@@ -198,24 +247,21 @@ contract TestBodaSavings is Test {
     }
 
     function testConstructorStoresRepaymentSchedule() public view {
-        (, , BodaBodaSavings.RepaymentSchedule sched, , ) =
-            bodaSavings.getLender(LENDER_WEEKLY);
+        (, , BodaBodaSavings.RepaymentSchedule sched, , ) = bodaSavings.getLender(LENDER_WEEKLY);
         assertEq(uint8(sched), uint8(BodaBodaSavings.RepaymentSchedule.WEEKLY));
 
-        (, , BodaBodaSavings.RepaymentSchedule sched2, , ) =
-            bodaSavings.getLender(LENDER_MONTHLY);
+        (, , BodaBodaSavings.RepaymentSchedule sched2, , ) = bodaSavings.getLender(LENDER_MONTHLY);
         assertEq(uint8(sched2), uint8(BodaBodaSavings.RepaymentSchedule.MONTHLY));
     }
 
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
     //                  2. LENDER MANAGEMENT TESTS
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
 
     function testAddLenderSuccess() public {
         vm.prank(OWNER);
         bodaSavings.addLender(
-            NEW_LENDER, "New SACCO", 14 days,
-            BodaBodaSavings.RepaymentSchedule.BIWEEKLY
+            NEW_LENDER, "New SACCO", 14 days, BodaBodaSavings.RepaymentSchedule.BIWEEKLY
         );
 
         assertEq(bodaSavings.getLenderCount(), 4);
@@ -229,24 +275,16 @@ contract TestBodaSavings is Test {
 
     function testAddLenderRevertsIfAlreadyRegistered() public {
         vm.prank(OWNER);
-        vm.expectRevert(
-            BodaBodaSavings.BodaBodaSavings__LenderAlreadyRegistered.selector
-        );
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__LenderAlreadyRegistered.selector);
         bodaSavings.addLender(
-            LENDER_WEEKLY, "Duplicate", 7 days,
-            BodaBodaSavings.RepaymentSchedule.WEEKLY
+            LENDER_WEEKLY, "Duplicate", 7 days, BodaBodaSavings.RepaymentSchedule.WEEKLY
         );
     }
 
     function testAddLenderRevertsIfZeroCycle() public {
         vm.prank(OWNER);
-        vm.expectRevert(
-            BodaBodaSavings.BodaBodaSavings__InvalidCollectionCycle.selector
-        );
-        bodaSavings.addLender(
-            NEW_LENDER, "Bad", 0,
-            BodaBodaSavings.RepaymentSchedule.MONTHLY
-        );
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__InvalidCollectionCycle.selector);
+        bodaSavings.addLender(NEW_LENDER, "Bad", 0, BodaBodaSavings.RepaymentSchedule.MONTHLY);
     }
 
     function testDeactivateAndReactivateLender() public {
@@ -279,40 +317,39 @@ contract TestBodaSavings is Test {
         assertEq(rest[0], LENDER_DAILY);
     }
 
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
     //             3. RIDER REGISTRATION TESTS
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
 
     function testRegisterRiderSuccess() public view {
         assertTrue(bodaSavings.isVerifiedRider(USER));
     }
 
     function testRegisterRiderStoresIdentity() public view {
-        (string memory name, uint8 age, bytes1 gender, bool registered,,,,, ) =
-            bodaSavings.getRiderProfile(USER);
-        assertEq(name,    RIDER_NAME);
-        assertEq(age,     RIDER_AGE);
-        assertEq(gender,  RIDER_GENDER);
-        assertTrue(registered);
+        BodaBodaSavings.RiderProfileView memory p = bodaSavings.getRiderProfile(USER);
+        assertEq(p.name, RIDER_NAME);
+        assertEq(p.age,  RIDER_AGE);
+        assertTrue(p.gender == RIDER_GENDER);
+        assertTrue(p.registered);
     }
 
     function testRegisterRiderStoresSplitRatio() public view {
-        (,,,,,,, BodaBodaSavings.SplitRatio ratio,) =
-            bodaSavings.getRiderProfile(USER);
-        assertEq(uint8(ratio), uint8(BodaBodaSavings.SplitRatio.SPLIT_50_50));
+        BodaBodaSavings.RiderProfileView memory p = bodaSavings.getRiderProfile(USER);
+        assertEq(uint8(p.splitRatio), uint8(BodaBodaSavings.SplitRatio.SPLIT_50_50));
     }
 
     function testRegisterRiderStoresLenderAndSchedule() public view {
-        (
-            ,,,,
-            address lenderAddr,
-            string memory lenderName,
-            BodaBodaSavings.RepaymentSchedule schedule,
-            ,
-        ) = bodaSavings.getRiderProfile(USER);
-        assertEq(lenderAddr, LENDER_WEEKLY);
-        assertEq(lenderName, "Mwanga Haba SACCO");
-        assertEq(uint8(schedule), uint8(BodaBodaSavings.RepaymentSchedule.WEEKLY));
+        BodaBodaSavings.RiderProfileView memory p = bodaSavings.getRiderProfile(USER);
+        assertEq(p.lenderAddress, LENDER_WEEKLY);
+        assertEq(p.lenderName, "Mwanga Haba SACCO");
+        assertEq(uint8(p.lenderSchedule), uint8(BodaBodaSavings.RepaymentSchedule.WEEKLY));
+    }
+
+    function testRegisterRiderInitializesSettlementClock() public view {
+        // lastSettledAt set at registration; first settlement due one cycle later.
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.lastSettledAt, SETUP_TIMESTAMP);
+        assertEq(a.nextSettlementDue, SETUP_TIMESTAMP + 7 days);
     }
 
     function testRegisterRiderRevertsIfAlreadyRegistered() public {
@@ -321,8 +358,7 @@ contract TestBodaSavings is Test {
         bodaSavings.registerRider(
             RIDER_NAME, RIDER_AGE, RIDER_GENDER,
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
         );
     }
 
@@ -332,8 +368,7 @@ contract TestBodaSavings is Test {
         bodaSavings.registerRider(
             "", RIDER_AGE, RIDER_GENDER,
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
         );
     }
 
@@ -343,8 +378,7 @@ contract TestBodaSavings is Test {
         bodaSavings.registerRider(
             RIDER_NAME, 17, RIDER_GENDER,
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
         );
     }
 
@@ -354,8 +388,7 @@ contract TestBodaSavings is Test {
         bodaSavings.registerRider(
             RIDER_NAME, 66, RIDER_GENDER,
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
         );
     }
 
@@ -363,10 +396,9 @@ contract TestBodaSavings is Test {
         vm.prank(address(0xE3));
         vm.expectRevert(BodaBodaSavings.BodaBodaSavings__InvalidGender.selector);
         bodaSavings.registerRider(
-            RIDER_NAME, RIDER_AGE, 0x58,
+            RIDER_NAME, RIDER_AGE, bytes1(0x58),   // 'X'
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
         );
     }
 
@@ -379,8 +411,7 @@ contract TestBodaSavings is Test {
         bodaSavings.registerRider(
             RIDER_NAME, RIDER_AGE, RIDER_GENDER,
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
         );
     }
 
@@ -390,8 +421,7 @@ contract TestBodaSavings is Test {
         bodaSavings.registerRider(
             RIDER_NAME, RIDER_AGE, RIDER_GENDER,
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, block.timestamp - 1, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, block.timestamp - 1, KYC_PROVIDER
         );
     }
 
@@ -404,8 +434,7 @@ contract TestBodaSavings is Test {
             bodaSavings.registerRider(
                 RIDER_NAME, RIDER_AGE, genders[i],
                 LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
-                LOAN_TARGET, KYC_HASH,
-                KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+                LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
             );
             assertTrue(bodaSavings.isVerifiedRider(riderAddrs[i]));
         }
@@ -414,10 +443,7 @@ contract TestBodaSavings is Test {
     function testUpdateRiderKYCSuccess() public {
         bytes32 newHash = keccak256("updated_kyc");
         vm.prank(OWNER);
-        bodaSavings.updateRiderKYC(
-            USER, newHash, KYC_PREMIUM_LEVEL,
-            licenseExpiry + 365 days, KYC_PROVIDER
-        );
+        bodaSavings.updateRiderKYC(USER, newHash, KYC_PREMIUM_LEVEL, licenseExpiry + 365 days, KYC_PROVIDER);
         (bytes32 h, uint8 lvl,,,,) = bodaSavings.getRiderKYC(USER);
         assertEq(h,   newHash);
         assertEq(lvl, KYC_PREMIUM_LEVEL);
@@ -431,21 +457,38 @@ contract TestBodaSavings is Test {
     }
 
     function testUpdateLoanTargetRevertsIfBelowRepaid() public {
+        // Build up repaid balance via a scheduled settlement.
         vm.prank(USER);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-        vm.prank(USER);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-        vm.prank(USER);
-        bodaSavings.releaseFromPot();
+        bodaSavings.deposit(DEPOSIT_AMOUNT);          // loan 500e6
+        _warpPastSettlement(USER);
+        bodaSavings.settleLoanRepayment(USER);        // loanRepaid = 500e6
 
         vm.prank(OWNER);
         vm.expectRevert(BodaBodaSavings.BodaBodaSavings__NewTargetBelowRepaid.selector);
         bodaSavings.updateLoanTarget(USER, 100e6);
     }
 
-    // ────────────────────────────────────────────────────────────────
+    function testUpdateSplitRatioAffectsFutureDeposits() public {
+        vm.expectEmit(true, false, false, true);
+        emit BodaBodaSavings.SplitRatioUpdated(
+            USER,
+            BodaBodaSavings.SplitRatio.SPLIT_50_50,
+            BodaBodaSavings.SplitRatio.SPLIT_70_30
+        );
+        vm.prank(USER);
+        bodaSavings.updateSplitRatio(BodaBodaSavings.SplitRatio.SPLIT_70_30);
+
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.savingsBalance, 700e6);
+        assertEq(a.loanBalance,    300e6);
+    }
+
+    // ════════════════════════════════════════════════════════════════
     //              4. DEPOSIT — SPLIT RATIO TESTS
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
 
     function testDepositRevertsIfZero() public {
         vm.prank(USER);
@@ -453,7 +496,7 @@ contract TestBodaSavings is Test {
         bodaSavings.deposit(0);
     }
 
-    function testDepositRevertsIfNotVerified() public {
+    function testDepositRevertsIfNotRegistered() public {
         vm.prank(STRANGER);
         vm.expectRevert(BodaBodaSavings.BodaBodaSavings__RiderNotRegistered.selector);
         bodaSavings.deposit(100e6);
@@ -462,37 +505,33 @@ contract TestBodaSavings is Test {
     function testDepositSplit5050() public {
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
-
-        (uint256 sav, uint256 loan,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(sav,  DEPOSIT_AMOUNT / 2);
-        assertEq(loan, DEPOSIT_AMOUNT / 2);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.savingsBalance, DEPOSIT_AMOUNT / 2);
+        assertEq(a.loanBalance,    DEPOSIT_AMOUNT / 2);
     }
 
     function testDepositSplit7030() public {
         address rider70 = address(0xAA);
         _registerRider(rider70, LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_70_30, LOAN_TARGET);
-
         vm.prank(rider70);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
-
-        (uint256 sav, uint256 loan,,,,,,,,, ) = bodaSavings.getRiderAnalytics(rider70);
-        assertEq(sav,  700e6);
-        assertEq(loan, 300e6);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(rider70);
+        assertEq(a.savingsBalance, 700e6);
+        assertEq(a.loanBalance,    300e6);
     }
 
     function testDepositSplit3070() public {
         address rider30 = address(0xBB);
         _registerRider(rider30, LENDER_MONTHLY, BodaBodaSavings.SplitRatio.SPLIT_30_70, LOAN_TARGET);
-
         vm.prank(rider30);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
-
-        (uint256 sav, uint256 loan,,,,,,,,, ) = bodaSavings.getRiderAnalytics(rider30);
-        assertEq(sav,  300e6);
-        assertEq(loan, 700e6);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(rider30);
+        assertEq(a.savingsBalance, 300e6);
+        assertEq(a.loanBalance,    700e6);
     }
 
-    function testDepositOddAmountLoanGetsRemainder() public {
+    function testDepositOddAmountFirstDepositLoanGetsFloorRemainder() public {
+        // First deposit (remainder starts at 0) matches V3 behaviour exactly.
         address freshRider = address(0xABCD);
         vm.prank(OWNER);
         mockUSDC.ownerMint(freshRider, 101);
@@ -501,20 +540,34 @@ contract TestBodaSavings is Test {
         bodaSavings.registerRider(
             "Fresh Rider", 25, bytes1(0x4d),
             LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_70_30,
-            LOAN_TARGET, KYC_HASH,
-            KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
         );
-
         vm.prank(freshRider);
         mockUSDC.approve(address(bodaSavings), type(uint256).max);
 
         vm.prank(freshRider);
         bodaSavings.deposit(101);
 
-        (uint256 sav, uint256 loan,,,,,,,,, ) = bodaSavings.getRiderAnalytics(freshRider);
-        assertEq(sav,  70);   // 101 * 70 / 100 = 70
-        assertEq(loan, 31);   // 101 - 70 = 31
-        assertEq(sav + loan, 101);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(freshRider);
+        assertEq(a.savingsBalance, 70);   // floor(101 * 70 / 100)
+        assertEq(a.loanBalance,    31);   // 101 - 70
+        assertEq(a.savingsBalance + a.loanBalance, 101);
+    }
+
+    function testSplitRemainderAccumulatesAcrossDeposits() public {
+        // [V4-6] The rounding remainder carries, so it nets out over deposits.
+        address r70 = address(0x7070);
+        _registerRider(r70, LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_70_30, LOAN_TARGET);
+
+        vm.prank(r70);
+        bodaSavings.deposit(101);   // savings 70, loan 31, remainder 70
+        vm.prank(r70);
+        bodaSavings.deposit(101);   // numerator 7070+70=7140 -> savings 71, loan 30
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(r70);
+        assertEq(a.savingsBalance, 141);   // 70 + 71 (carry corrected the rounding)
+        assertEq(a.loanBalance,    61);    // 31 + 30
+        assertEq(a.totalDeposited, 202);
     }
 
     function testDepositUpdatesTotalSavingsHeld() public {
@@ -523,30 +576,30 @@ contract TestBodaSavings is Test {
         assertEq(bodaSavings.totalSavingsHeld(), DEPOSIT_AMOUNT / 2);
     }
 
+    function testDepositUpdatesTotalUnsettledLoanBalance() public {
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+        assertEq(bodaSavings.totalUnsettledLoanBalance(), DEPOSIT_AMOUNT / 2);
+    }
+
     function testDepositTracksFirstAndLastTimestamps() public {
-        // setUp warps to SETUP_TIMESTAMP = 1_700_000_000
-        // First deposit happens at that timestamp
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
 
-        // Warp to exactly 1 day later for second deposit
         vm.warp(SETUP_TIMESTAMP + 1 days);
         vm.prank(OWNER);
         mockUSDC.ownerMint(USER, DEPOSIT_AMOUNT);
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
 
-        // getRiderAnalytics returns: ..., lastDepositAt(idx5), firstDepositAt(idx6), ...
-        // lastDepositAt  = SETUP_TIMESTAMP + 1 days
-        // firstDepositAt = SETUP_TIMESTAMP
-        (,,,,, uint256 lastDepAt, uint256 firstDepAt,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(firstDepAt, SETUP_TIMESTAMP);
-        assertEq(lastDepAt,  SETUP_TIMESTAMP + 1 days);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.firstDepositAt, SETUP_TIMESTAMP);
+        assertEq(a.lastDepositAt,  SETUP_TIMESTAMP + 1 days);
     }
 
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
     //               5. depositWithPermit TESTS
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
 
     function testDepositWithPermitSuccess() public {
         vm.prank(USER);
@@ -559,9 +612,9 @@ contract TestBodaSavings is Test {
         vm.prank(USER);
         bodaSavings.depositWithPermit(DEPOSIT_AMOUNT, deadline, v, r, s);
 
-        (uint256 sav, uint256 loan,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(sav,  DEPOSIT_AMOUNT / 2);
-        assertEq(loan, DEPOSIT_AMOUNT / 2);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.savingsBalance, DEPOSIT_AMOUNT / 2);
+        assertEq(a.loanBalance,    DEPOSIT_AMOUNT / 2);
     }
 
     function testDepositWithPermitRevertsIfZeroAmount() public {
@@ -614,170 +667,178 @@ contract TestBodaSavings is Test {
         assertEq(mockUSDC.nonces(USER), nonceBefore + 1);
     }
 
-    // ────────────────────────────────────────────────────────────────
-    //           6. POT MECHANISM + DEADLINE SNAPSHOT [AUD-2]
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
+    //          6. LOAN SETTLEMENT (scheduled, passive)  [V4-1]
+    // ════════════════════════════════════════════════════════════════
 
-    function testLockToPotSuccess() public {
-        _depositAndLock(DEPOSIT_AMOUNT / 2);
-
-        (,,,,,,, bool potActive, uint256 potBal,,) =
-            bodaSavings.getRiderAnalytics(USER);
-
-        assertTrue(potActive);
-        assertEq(potBal, DEPOSIT_AMOUNT / 2);
-        assertEq(bodaSavings.getLockedPotTotal(), DEPOSIT_AMOUNT / 2);
-    }
-
-    function testPotDeadlineSnapshotImmutableAfterCycleChange() public {
+    function testSettleRevertsIfNotDue() public {
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
-
-        uint256 expectedDeadline = block.timestamp + 7 days;
-
-        vm.prank(USER);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-
-        vm.prank(OWNER);
-        bodaSavings.updateLenderCycle(LENDER_WEEKLY, 14 days);
-
-        (,,,,,,,,,, uint256 potDeadline) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(potDeadline, expectedDeadline);
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__SettlementNotDue.selector);
+        bodaSavings.settleLoanRepayment(USER);
     }
 
-    function testSettleExpiredPotUsesSnapshotDeadline() public {
-        vm.prank(USER);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-        vm.prank(USER);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-
-        vm.prank(OWNER);
-        bodaSavings.updateLenderCycle(LENDER_WEEKLY, 1);
-
-        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__PotDeadlineNotReached.selector);
-        bodaSavings.settleExpiredPot(USER);
-
-        vm.warp(block.timestamp + 7 days + 1);
-        bodaSavings.settleExpiredPot(USER);
+    function testSettleRevertsIfRiderNotRegistered() public {
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__RiderNotRegistered.selector);
+        bodaSavings.settleLoanRepayment(STRANGER);
     }
 
-    function testPotDeadlineClearedAfterSettle() public {
-        _depositAndLock(DEPOSIT_AMOUNT / 2);
-
+    function testSettleSweepsToLenderAndResetsClock() public {
         vm.prank(USER);
-        bodaSavings.releaseFromPot();
-
-        (,,,,,,,,,, uint256 potDeadline) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(potDeadline, 0);
-    }
-
-    function testLockToPotRevertsIfAlreadyActive() public {
-        _depositAndLock(DEPOSIT_AMOUNT / 2);
-        vm.prank(USER);
-        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__PotAlreadyActive.selector);
-        bodaSavings.lockToPot(100e6, 0);
-    }
-
-    function testLockToPotRevertsIfInsufficientLoanBalance() public {
-        vm.prank(USER);
-        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__InsufficientLoanBalance.selector);
-        bodaSavings.lockToPot(100e6, 0);
-    }
-
-    function testReleaseFromPotSendsToLender() public {
-        _depositAndLock(DEPOSIT_AMOUNT / 2);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);            // loan 500e6
+        _warpPastSettlement(USER);
+        uint256 settleTime   = block.timestamp;
         uint256 lenderBefore = mockUSDC.balanceOf(LENDER_WEEKLY);
 
-        vm.prank(USER);
-        bodaSavings.releaseFromPot();
+        vm.prank(STRANGER);                             // permissionless
+        bodaSavings.settleLoanRepayment(USER);
 
-        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY) - lenderBefore, DEPOSIT_AMOUNT / 2);
-        (,,,,,,, bool potActive,,,) = bodaSavings.getRiderAnalytics(USER);
-        assertFalse(potActive);
+        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY) - lenderBefore, 500e6);
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.loanBalance,       0);
+        assertEq(a.loanRepaid,        500e6);
+        assertEq(a.lastSettledAt,     settleTime);
+        assertEq(a.nextSettlementDue, settleTime + 7 days);
+
+        // clock reset — an immediate re-settle is not due
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__SettlementNotDue.selector);
+        bodaSavings.settleLoanRepayment(USER);
     }
 
-    function testSettleExpiredPotByAnyone() public {
-        _depositAndLock(DEPOSIT_AMOUNT / 2);
-        vm.warp(block.timestamp + 7 days + 1);
-
-        vm.prank(STRANGER);
-        bodaSavings.settleExpiredPot(USER);
-
-        (,,,,,,, bool potActive,,,) = bodaSavings.getRiderAnalytics(USER);
-        assertFalse(potActive);
-    }
-
-    function testSettleExpiredPotRevertsIfDeadlineNotReached() public {
-        _depositAndLock(DEPOSIT_AMOUNT / 2);
-        vm.warp(block.timestamp + 3 days);
-
-        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__PotDeadlineNotReached.selector);
-        bodaSavings.settleExpiredPot(USER);
-    }
-
-    function testPotDeadlineDynamicPerLender() public {
-        address riderB = address(0xBB00);
-        _registerRider(riderB, LENDER_DAILY, BodaBodaSavings.SplitRatio.SPLIT_50_50, LOAN_TARGET);
-
-        vm.prank(riderB);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-        vm.prank(riderB);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-
-        vm.warp(block.timestamp + 1 days + 1);
-        bodaSavings.settleExpiredPot(riderB);
-
-        vm.prank(USER);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-        vm.prank(USER);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-
-        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__PotDeadlineNotReached.selector);
-        bodaSavings.settleExpiredPot(USER);
-    }
-
-    function testPotExcessReturnedToLoanBalance() public {
-        address riderC      = address(0xCC00);
-        uint256 smallTarget = 50e6;
-        _registerRider(riderC, LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50, smallTarget);
-
-        vm.prank(riderC);
-        bodaSavings.deposit(160e6);
-        vm.prank(riderC);
-        bodaSavings.lockToPot(80e6, 0);
-
+    function testSettleZeroBalanceAdvancesClockNoTransfer() public {
+        // No deposit -> loan 0. Settlement is a harmless schedule-advancing no-op.
+        _warpPastSettlement(USER);
+        uint256 t            = block.timestamp;
         uint256 lenderBefore = mockUSDC.balanceOf(LENDER_WEEKLY);
 
-        vm.expectEmit(true, false, false, true);
-        emit BodaBodaSavings.PotExcessReturned(riderC, 30e6);
+        bodaSavings.settleLoanRepayment(USER);
 
-        vm.prank(riderC);
-        bodaSavings.releaseFromPot();
-
-        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY) - lenderBefore, 50e6);
-        (, uint256 loanBal,,,,) = bodaSavings.getLoanStatus(riderC);
-        assertEq(loanBal, 30e6);
+        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY), lenderBefore);
+        assertEq(_analytics(USER).lastSettledAt, t);
     }
 
-    // ────────────────────────────────────────────────────────────────
-    //       7. SAVINGS WITHDRAWAL + STUCK-STATE FIXES [AUD-3]
-    // ────────────────────────────────────────────────────────────────
+    function testSettleBlockedWhenPaused() public {
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+        _warpPastSettlement(USER);
 
-    function testRequestWithdrawalSuccess() public {
-        _depositAndRequestWithdrawal(200e6);
+        vm.prank(OWNER);
+        bodaSavings.pause();
+
+        vm.expectRevert();   // Pausable: EnforcedPause
+        bodaSavings.settleLoanRepayment(USER);
+    }
+
+    function testUpdateLenderCycleAppliesToExistingRider() public {
+        // [V4-2] cycle change re-bases the existing rider's next settlement.
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);            // loan 500e6
+
+        vm.warp(SETUP_TIMESTAMP + 1 days + 1);
+        assertFalse(bodaSavings.isSettlementDue(USER)); // not due under 7-day cycle
+
+        vm.prank(OWNER);
+        bodaSavings.updateLenderCycle(LENDER_WEEKLY, 1 days);
+        assertTrue(bodaSavings.isSettlementDue(USER));  // now due under 1-day cycle
+
+        uint256 lenderBefore = mockUSDC.balanceOf(LENDER_WEEKLY);
+        bodaSavings.settleLoanRepayment(USER);
+        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY) - lenderBefore, 500e6);
+    }
+
+    function testSettleCapsAtTargetAndRoutesExcessToSavings() public {
+        // [V4-3] loanBalance beyond remaining target spills into savings on clearing.
+        address riderC = address(0xCC00);
+        _registerRider(riderC, LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50, 50e6);
+
+        vm.prank(riderC);
+        bodaSavings.deposit(160e6);                    // savings 80e6, loan 80e6
+        _warpPastSettlement(riderC);
+
+        uint256 lenderBefore = mockUSDC.balanceOf(LENDER_WEEKLY);
+        bodaSavings.settleLoanRepayment(riderC);
+
+        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY) - lenderBefore, 50e6); // capped at target
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(riderC);
+        assertEq(a.loanBalance,    0);
+        assertEq(a.loanRepaid,     50e6);
+        assertEq(a.savingsBalance, 110e6);             // 80e6 + 30e6 excess
+
+        (,,,, bool cleared,) = bodaSavings.getLoanStatus(riderC);
+        assertTrue(cleared);
+    }
+
+    function testDepositsRouteFullyToSavingsAfterLoanCleared() public {
+        address rider = _setupClearedRider();          // cleared, savings 110e6
+        vm.prank(rider);
+        bodaSavings.deposit(100e6);
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(rider);
+        assertEq(a.loanBalance,    0);                 // nothing routed to loan
+        assertEq(a.savingsBalance, 210e6);             // full deposit to savings
+    }
+
+    function testSettlementSucceedsAfterLicenseExpired() public {
+        // Repayment is an obligation — must settle even if the licence lapsed.
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+
+        vm.warp(licenseExpiry + 7 days + 1);           // licence expired, settlement due
+        uint256 lenderBefore = mockUSDC.balanceOf(LENDER_WEEKLY);
+        bodaSavings.settleLoanRepayment(USER);
+        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY) - lenderBefore, 500e6);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //       7. SAVINGS WITHDRAWAL + TIERED APPROVAL  [AUD-3][V4-5]
+    // ════════════════════════════════════════════════════════════════
+
+    function testRequestWithdrawalAboveThresholdIsPending() public {
+        _depositAndRequestWithdrawal(200e6);           // 200e6 > 50e6 threshold
 
         (uint256 amt, bytes32 cat,,,, BodaBodaSavings.WithdrawalStatus status) =
             bodaSavings.getWithdrawalRequest(USER);
-
         assertEq(amt, 200e6);
         assertEq(cat, REASON_MEDICAL_VAL);
         assertEq(uint8(status), uint8(BodaBodaSavings.WithdrawalStatus.Pending));
     }
 
-    function testRequestWithdrawalRevertsIfInvalidCategory() public {
+    function testRequestWithdrawalUnderThresholdAutoApproves() public {
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
 
+        uint256 small = bodaSavings.autoApprovalThreshold();   // 50e6, <= threshold
+        vm.prank(USER);
+        bodaSavings.requestWithdrawal(small, REASON_MEDICAL_VAL);
+
+        (,,,,, BodaBodaSavings.WithdrawalStatus status) = bodaSavings.getWithdrawalRequest(USER);
+        assertEq(uint8(status), uint8(BodaBodaSavings.WithdrawalStatus.Approved));
+
+        // claimable after the delay without any manual approval
+        vm.warp(block.timestamp + bodaSavings.WITHDRAWAL_DELAY() + 1);
+        uint256 before = mockUSDC.balanceOf(USER);
+        vm.prank(USER);
+        bodaSavings.claimWithdrawal();
+        assertEq(mockUSDC.balanceOf(USER) - before, small);
+    }
+
+    function testOwnerCanRevokeAutoApprovedWithdrawalDuringDelay() public {
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+        vm.prank(USER);
+        bodaSavings.requestWithdrawal(50e6, REASON_MEDICAL_VAL);  // auto-approved
+
+        vm.prank(OWNER);
+        bodaSavings.revokeApprovedWithdrawal(USER);
+
+        assertEq(_analytics(USER).savingsBalance, DEPOSIT_AMOUNT / 2); // restored
+    }
+
+    function testRequestWithdrawalRevertsIfInvalidCategory() public {
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
         vm.prank(USER);
         vm.expectRevert(BodaBodaSavings.BodaBodaSavings__InvalidWithdrawalCategory.selector);
         bodaSavings.requestWithdrawal(100e6, bytes32("INVALID"));
@@ -800,11 +861,9 @@ contract TestBodaSavings is Test {
         uint256 before = mockUSDC.balanceOf(USER);
         vm.prank(USER);
         bodaSavings.claimWithdrawal();
-
         assertEq(mockUSDC.balanceOf(USER) - before, 200e6);
 
-        BodaBodaSavings.WithdrawalRecord[] memory hist =
-            bodaSavings.getWithdrawalHistory(USER);
+        BodaBodaSavings.WithdrawalRecord[] memory hist = bodaSavings.getWithdrawalHistory(USER);
         assertEq(hist.length,    1);
         assertEq(hist[0].amount, 200e6);
     }
@@ -817,16 +876,17 @@ contract TestBodaSavings is Test {
 
         vm.warp(licenseExpiry + bodaSavings.WITHDRAWAL_DELAY() + 1);
 
+        // deposits are gated by licence...
         vm.prank(OWNER);
         mockUSDC.ownerMint(USER, 1e6);
         vm.prank(USER);
         vm.expectRevert(BodaBodaSavings.BodaBodaSavings__LicenseExpired.selector);
         bodaSavings.deposit(1e6);
 
+        // ...but reclaiming one's own savings is not.
         uint256 before = mockUSDC.balanceOf(USER);
         vm.prank(USER);
         bodaSavings.claimWithdrawal();
-
         assertEq(mockUSDC.balanceOf(USER) - before, 200e6);
     }
 
@@ -846,11 +906,9 @@ contract TestBodaSavings is Test {
         vm.prank(OWNER);
         bodaSavings.denyWithdrawal(USER);
 
-        (uint256 savRestored,,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(savRestored, DEPOSIT_AMOUNT / 2);
+        assertEq(_analytics(USER).savingsBalance, DEPOSIT_AMOUNT / 2);
 
-        (,,,,, BodaBodaSavings.WithdrawalStatus status) =
-            bodaSavings.getWithdrawalRequest(USER);
+        (,,,,, BodaBodaSavings.WithdrawalStatus status) = bodaSavings.getWithdrawalRequest(USER);
         assertEq(uint8(status), uint8(BodaBodaSavings.WithdrawalStatus.None));
     }
 
@@ -859,21 +917,17 @@ contract TestBodaSavings is Test {
 
         vm.prank(OWNER);
         bodaSavings.approveWithdrawal(USER);
-
         vm.prank(OWNER);
         bodaSavings.revokeApprovedWithdrawal(USER);
 
-        (uint256 sav,,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(sav, DEPOSIT_AMOUNT / 2);
+        assertEq(_analytics(USER).savingsBalance, DEPOSIT_AMOUNT / 2);
 
-        (,,,,, BodaBodaSavings.WithdrawalStatus statusAfter) =
-            bodaSavings.getWithdrawalRequest(USER);
+        (,,,,, BodaBodaSavings.WithdrawalStatus statusAfter) = bodaSavings.getWithdrawalRequest(USER);
         assertEq(uint8(statusAfter), uint8(BodaBodaSavings.WithdrawalStatus.None));
     }
 
     function testRevokeApprovedWithdrawalRevertsIfNotApproved() public {
-        _depositAndRequestWithdrawal(200e6);
-
+        _depositAndRequestWithdrawal(200e6);           // Pending, not Approved
         vm.prank(OWNER);
         vm.expectRevert(BodaBodaSavings.BodaBodaSavings__WithdrawalNotApproved.selector);
         bodaSavings.revokeApprovedWithdrawal(USER);
@@ -885,25 +939,21 @@ contract TestBodaSavings is Test {
         vm.prank(USER);
         bodaSavings.cancelWithdrawal();
 
-        (uint256 savRestored,,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(savRestored, DEPOSIT_AMOUNT / 2);
+        assertEq(_analytics(USER).savingsBalance, DEPOSIT_AMOUNT / 2);
 
-        (,,,,, BodaBodaSavings.WithdrawalStatus status) =
-            bodaSavings.getWithdrawalRequest(USER);
+        (,,,,, BodaBodaSavings.WithdrawalStatus status) = bodaSavings.getWithdrawalRequest(USER);
         assertEq(uint8(status), uint8(BodaBodaSavings.WithdrawalStatus.None));
     }
 
     function testCancelWithdrawalFromApprovedSuccess() public {
         _depositAndRequestWithdrawal(200e6);
-
         vm.prank(OWNER);
         bodaSavings.approveWithdrawal(USER);
 
         vm.prank(USER);
         bodaSavings.cancelWithdrawal();
 
-        (uint256 savRestored,,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(savRestored, DEPOSIT_AMOUNT / 2);
+        assertEq(_analytics(USER).savingsBalance, DEPOSIT_AMOUNT / 2);
     }
 
     function testCancelWithdrawalRevertsIfNoRequest() public {
@@ -914,19 +964,16 @@ contract TestBodaSavings is Test {
 
     function testCancelWithdrawalWorksAfterKYCExpires() public {
         _depositAndRequestWithdrawal(200e6);
-
         vm.warp(licenseExpiry + 1);
 
         vm.prank(USER);
         bodaSavings.cancelWithdrawal();
 
-        (uint256 sav,,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(sav, DEPOSIT_AMOUNT / 2);
+        assertEq(_analytics(USER).savingsBalance, DEPOSIT_AMOUNT / 2);
     }
 
-    function testClaimWithdrawalDecreases_totalSavingsHeld() public {
+    function testClaimWithdrawalDecreasesTotalSavingsHeld() public {
         _depositAndRequestWithdrawal(200e6);
-
         uint256 heldBefore = bodaSavings.totalSavingsHeld();
 
         vm.prank(OWNER);
@@ -953,18 +1000,15 @@ contract TestBodaSavings is Test {
         for (uint256 i = 0; i < 7; i++) {
             vm.prank(OWNER);
             mockUSDC.ownerMint(USER, DEPOSIT_AMOUNT);
-
             vm.prank(USER);
             bodaSavings.deposit(DEPOSIT_AMOUNT);
 
             vm.prank(USER);
-            bodaSavings.requestWithdrawal(100e6, categories[i]);
-
+            bodaSavings.requestWithdrawal(100e6, categories[i]);   // 100e6 > threshold -> Pending
             vm.prank(OWNER);
             bodaSavings.approveWithdrawal(USER);
 
             vm.warp(block.timestamp + bodaSavings.WITHDRAWAL_DELAY() + 1);
-
             vm.prank(USER);
             bodaSavings.claimWithdrawal();
         }
@@ -972,14 +1016,13 @@ contract TestBodaSavings is Test {
         assertEq(bodaSavings.getWithdrawalHistory(USER).length, 7);
     }
 
-    // ────────────────────────────────────────────────────────────────
-    //       8. ADMIN — PAUSE / setStablecoin [AUD-4] / recoverERC20
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
+    //   8. ADMIN — PAUSE / setStablecoin [AUD-4] / threshold / recover
+    // ════════════════════════════════════════════════════════════════
 
     function testPauseBlocksDeposit() public {
         vm.prank(OWNER);
         bodaSavings.pause();
-
         vm.prank(USER);
         vm.expectRevert();
         bodaSavings.deposit(DEPOSIT_AMOUNT);
@@ -1008,6 +1051,22 @@ contract TestBodaSavings is Test {
         bodaSavings.deposit(DEPOSIT_AMOUNT);
     }
 
+    function testSetAutoApprovalThreshold() public {
+        vm.expectEmit(false, false, false, true);
+        emit BodaBodaSavings.AutoApprovalThresholdUpdated(50e6, 100e6);
+        vm.prank(OWNER);
+        bodaSavings.setAutoApprovalThreshold(100e6);
+        assertEq(bodaSavings.autoApprovalThreshold(), 100e6);
+    }
+
+    function testSetAutoApprovalThresholdOnlyOwner() public {
+        vm.prank(STRANGER);
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, STRANGER)
+        );
+        bodaSavings.setAutoApprovalThreshold(100e6);
+    }
+
     function testSetStablecoinRevertsIfSavingsHeldNonZero() public {
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
@@ -1018,19 +1077,11 @@ contract TestBodaSavings is Test {
         bodaSavings.setStablecoin(address(newToken));
     }
 
-    function testSetStablecoinRevertsIfLoanCreditsOutstanding() public {
-        vm.prank(USER);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-
-        MockUSDC newToken = new MockUSDC(10e6, OWNER);
+    function testSetStablecoinRevertsIfDecimalsMismatch() public {
+        Decimals18Token t18 = new Decimals18Token();
         vm.prank(OWNER);
-        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__OutstandingAccounting.selector);
-        bodaSavings.setStablecoin(address(newToken));
-    }
-
-    function testSetStablecoinRevertsIfDecimalsMismatch() public pure {
-        // Requires a separate 18-decimal mock — covered by OutstandingAccounting tests
-        assertTrue(true);
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__DecimalsMismatch.selector);
+        bodaSavings.setStablecoin(address(t18));
     }
 
     function testSetStablecoinSuccessWhenAllAccountingZero() public {
@@ -1065,46 +1116,303 @@ contract TestBodaSavings is Test {
     function testOnlyOwnerCanPause() public {
         vm.prank(STRANGER);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                Ownable.OwnableUnauthorizedAccount.selector,
-                STRANGER
-            )
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, STRANGER)
         );
         bodaSavings.pause();
     }
 
-    // ────────────────────────────────────────────────────────────────
-    //                  9. VIEW HELPER TESTS
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
+    //         9. OWNABLE2STEP  [SEC-A]  +  SOLVENCY  [V4-7]
+    // ════════════════════════════════════════════════════════════════
+
+    function testOwnershipTransferIsTwoStep() public {
+        vm.prank(OWNER);
+        bodaSavings.transferOwnership(NEW_OWNER);
+
+        assertEq(bodaSavings.owner(),        OWNER);       // unchanged until accepted
+        assertEq(bodaSavings.pendingOwner(), NEW_OWNER);
+
+        vm.prank(NEW_OWNER);
+        bodaSavings.acceptOwnership();
+        assertEq(bodaSavings.owner(), NEW_OWNER);
+    }
+
+    function testAcceptOwnershipRevertsForNonPending() public {
+        vm.prank(OWNER);
+        bodaSavings.transferOwnership(NEW_OWNER);
+
+        vm.prank(STRANGER);
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, STRANGER)
+        );
+        bodaSavings.acceptOwnership();
+    }
+
+    function testIsSolventAndTotalObligations() public {
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+        assertTrue(bodaSavings.isSolvent());
+        assertEq(bodaSavings.getTotalObligations(), DEPOSIT_AMOUNT);  // 500 sav + 500 loan
+    }
+
+    function testSolvencyHoldsThroughSettlement() public {
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+        _warpPastSettlement(USER);
+        bodaSavings.settleLoanRepayment(USER);
+
+        assertTrue(bodaSavings.isSolvent());
+        assertEq(bodaSavings.getTotalObligations(), 500e6);          // savings only now
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //        10. FEE-ON-TRANSFER CREDITING  [SEC-B]
+    // ════════════════════════════════════════════════════════════════
+
+    function testDepositCreditsActualReceivedNotRequested() public {
+        FeeOnTransferToken fee  = new FeeOnTransferToken();   // 1% fee, 6 decimals
+        BodaBodaSavings   fresh = _deployWith(address(fee));
+
+        address rider = address(0xFEE1);
+        vm.prank(rider);
+        fresh.registerRider(
+            "Fee Rider", 30, bytes1(0x4d),
+            LENDER_WEEKLY, BodaBodaSavings.SplitRatio.SPLIT_50_50,
+            LOAN_TARGET, KYC_HASH, KYC_FULL_LEVEL, licenseExpiry, KYC_PROVIDER
+        );
+
+        fee.mint(rider, 1_000e6);
+        vm.prank(rider);
+        fee.approve(address(fresh), type(uint256).max);
+
+        vm.prank(rider);
+        fresh.deposit(1_000e6);                              // 1% fee -> 990e6 arrives
+
+        BodaBodaSavings.RiderAnalyticsView memory a = fresh.getRiderAnalytics(rider);
+        assertEq(a.savingsBalance + a.loanBalance, 990e6);   // credited the real delta
+        assertEq(a.totalDeposited, 990e6);
+        assertEq(fresh.getContractBalance(), 990e6);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //   10.5 RELAYER / creditDeposit  [V4.1-1][V4.1-2] — off-chain fiat rail leg
+    // ════════════════════════════════════════════════════════════════
+
+    address constant RELAYER = address(0xBEE5);
+
+    /// @dev Funds the relayer with mockUSDC and approves the contract, mirroring
+    ///      what a real backend wallet must do before calling creditDeposit().
+    function _setUpRelayer(uint256 relayerBalance) internal {
+        vm.prank(OWNER);
+        bodaSavings.setRelayer(RELAYER);
+
+        vm.prank(OWNER);
+        mockUSDC.ownerMint(RELAYER, relayerBalance);
+
+        vm.prank(RELAYER);
+        mockUSDC.approve(address(bodaSavings), type(uint256).max);
+    }
+
+    function testSetRelayerOnlyOwner() public {
+        vm.prank(STRANGER);
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, STRANGER)
+        );
+        bodaSavings.setRelayer(RELAYER);
+    }
+
+    function testSetRelayerEmitsEvent() public {
+        vm.expectEmit(true, true, false, false);
+        emit BodaBodaSavings.RelayerUpdated(address(0), RELAYER);
+        vm.prank(OWNER);
+        bodaSavings.setRelayer(RELAYER);
+        assertEq(bodaSavings.relayer(), RELAYER);
+    }
+
+    function testCreditDepositRevertsIfCallerNotRelayer() public {
+        _setUpRelayer(1_000e6);
+        vm.prank(STRANGER); // not the configured relayer
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__NotRelayer.selector);
+        bodaSavings.creditDeposit(USER, 100e6);
+    }
+
+    function testCreditDepositRevertsIfNoRelayerConfigured() public {
+        // Fresh deploy, relayer never set (still address(0)) — unreachable by design.
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__NotRelayer.selector);
+        bodaSavings.creditDeposit(USER, 100e6);
+    }
+
+    function testCreditDepositRevertsIfRiderNotRegistered() public {
+        _setUpRelayer(1_000e6);
+        vm.prank(RELAYER);
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__RiderNotRegistered.selector);
+        bodaSavings.creditDeposit(STRANGER, 100e6);
+    }
+
+    function testCreditDepositRevertsIfZeroAmount() public {
+        _setUpRelayer(1_000e6);
+        vm.prank(RELAYER);
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__ZeroDeposit.selector);
+        bodaSavings.creditDeposit(USER, 0);
+    }
+
+    function testCreditDepositRevertsIfZeroAddressRider() public {
+        _setUpRelayer(1_000e6);
+        vm.prank(RELAYER);
+        vm.expectRevert(BodaBodaSavings.BodaBodaSavings__ZeroAddress.selector);
+        bodaSavings.creditDeposit(address(0), 100e6);
+    }
+
+    /// @dev Not a mint: if the relayer hasn't approved/funded itself, the underlying
+    ///      SafeERC20 transferFrom reverts exactly as it would for a normal deposit.
+    function testCreditDepositRevertsIfRelayerHasInsufficientBalance() public {
+        vm.prank(OWNER);
+        bodaSavings.setRelayer(RELAYER);
+        // Deliberately skip minting/approving — relayer holds and has approved nothing.
+        vm.prank(RELAYER);
+        vm.expectRevert();
+        bodaSavings.creditDeposit(USER, 100e6);
+    }
+
+    function testCreditDepositAppliesSameSplitAsWalletDeposit() public {
+        _setUpRelayer(1_000e6);
+
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT); // USER is 50/50
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.savingsBalance, DEPOSIT_AMOUNT / 2);
+        assertEq(a.loanBalance,    DEPOSIT_AMOUNT / 2);
+        assertEq(a.totalDeposited, DEPOSIT_AMOUNT);
+    }
+
+    function testCreditDepositPullsFromRelayerNotRider() public {
+        _setUpRelayer(1_000e6);
+
+        uint256 riderBalBefore   = mockUSDC.balanceOf(USER);
+        uint256 relayerBalBefore = mockUSDC.balanceOf(RELAYER);
+
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT);
+
+        // Rider's own wallet balance is untouched — funds came from the relayer.
+        assertEq(mockUSDC.balanceOf(USER), riderBalBefore);
+        assertEq(relayerBalBefore - mockUSDC.balanceOf(RELAYER), DEPOSIT_AMOUNT);
+    }
+
+    function testCreditDepositRespectsLoanClearedRouting() public {
+        // [V4-3] same routing as a wallet deposit once the loan target is met.
+        _setUpRelayer(1_000e6);
+        address rider = _setupClearedRider(); // cleared via wallet deposit + settlement
+
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(rider, 100e6);
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(rider);
+        assertEq(a.loanBalance,    0);       // nothing routed to loan
+        assertEq(a.savingsBalance, 210e6);   // 110e6 prior + full 100e6 credited deposit
+    }
+
+    function testCreditDepositEmitsDepositCreditedEvent() public {
+        _setUpRelayer(1_000e6);
+
+        vm.expectEmit(true, true, false, true);
+        emit BodaBodaSavings.DepositCredited(
+            USER, RELAYER, DEPOSIT_AMOUNT, DEPOSIT_AMOUNT / 2, DEPOSIT_AMOUNT / 2, block.timestamp
+        );
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT);
+    }
+
+    function testCreditDepositBlockedWhenPaused() public {
+        _setUpRelayer(1_000e6);
+        vm.prank(OWNER);
+        bodaSavings.pause();
+
+        vm.prank(RELAYER);
+        vm.expectRevert(); // Pausable: EnforcedPause
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT);
+    }
+
+    function testCreditDepositMaintainsSolvencyInvariant() public {
+        _setUpRelayer(1_000e6);
+
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT);
+
+        assertTrue(bodaSavings.isSolvent());
+        assertEq(bodaSavings.getTotalObligations(), DEPOSIT_AMOUNT);
+        assertGe(bodaSavings.getContractBalance(), bodaSavings.getTotalObligations());
+    }
+
+    function testCreditDepositUpdatesAggregatesLikeWalletDeposit() public {
+        _setUpRelayer(1_000e6);
+
+        uint256 savingsBefore  = bodaSavings.totalSavingsHeld();
+        uint256 unsettledBefore = bodaSavings.totalUnsettledLoanBalance();
+
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT);
+
+        assertEq(bodaSavings.totalSavingsHeld() - savingsBefore, DEPOSIT_AMOUNT / 2);
+        assertEq(bodaSavings.totalUnsettledLoanBalance() - unsettledBefore, DEPOSIT_AMOUNT / 2);
+    }
+
+    /// @dev [V4.1-1] On-chain idempotency is explicitly NOT enforced — calling
+    ///      creditDeposit() twice for "the same" off-chain payment double-credits.
+    ///      That's a documented design choice (responsibility sits with the backend
+    ///      ledger), and this test exists to make the behaviour explicit rather than
+    ///      implicitly assumed.
+    function testCreditDepositCalledTwiceDoubleCredits() public {
+        _setUpRelayer(2_000e6);
+
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT);
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, DEPOSIT_AMOUNT); // same "invoice" in spirit
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.totalDeposited, DEPOSIT_AMOUNT * 2); // double-credited, as documented
+    }
+
+    function testFuzzCreditDepositSplitAlwaysSumsToTotal(uint256 amount) public {
+        amount = bound(amount, 2, 5_000e6);
+        _setUpRelayer(amount);
+
+        vm.prank(RELAYER);
+        bodaSavings.creditDeposit(USER, amount);
+
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.savingsBalance + a.loanBalance, amount);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //                  11. VIEW HELPER TESTS
+    // ════════════════════════════════════════════════════════════════
 
     function testGetRiderProfileReturnsCorrectData() public view {
-        (
-            string memory name,
-            uint8  age,
-            bytes1 gender,
-            bool   registered,
-            address lenderAddr,
-            string memory lenderName,
-            BodaBodaSavings.RepaymentSchedule schedule,
-            ,
-        ) = bodaSavings.getRiderProfile(USER);
+        BodaBodaSavings.RiderProfileView memory p = bodaSavings.getRiderProfile(USER);
+        assertEq(p.name, RIDER_NAME);
+        assertEq(p.age,  RIDER_AGE);
+        assertTrue(p.gender == RIDER_GENDER);
+        assertTrue(p.registered);
+        assertEq(p.lenderAddress, LENDER_WEEKLY);
+        assertEq(p.lenderName,    "Mwanga Haba SACCO");
+        assertEq(uint8(p.lenderSchedule), uint8(BodaBodaSavings.RepaymentSchedule.WEEKLY));
+    }
 
-        assertEq(name,    RIDER_NAME);
-        assertEq(age,     RIDER_AGE);
-        assertEq(gender,  RIDER_GENDER);
-        assertTrue(registered);
-        assertEq(lenderAddr, LENDER_WEEKLY);
-        assertEq(lenderName, "Mwanga Haba SACCO");
-        assertEq(uint8(schedule), uint8(BodaBodaSavings.RepaymentSchedule.WEEKLY));
+    function testGetRiderReturnsRawStruct() public view {
+        BodaBodaSavings.Rider memory r = bodaSavings.getRider(USER);
+        assertEq(r.name,       RIDER_NAME);
+        assertEq(r.loanTarget, LOAN_TARGET);
+        assertTrue(r.registered);
     }
 
     function testGetLoanStatusProgress() public {
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
-        vm.prank(USER);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-        vm.prank(USER);
-        bodaSavings.releaseFromPot();
+        _warpPastSettlement(USER);
+        bodaSavings.settleLoanRepayment(USER);
 
         (
             uint256 target,
@@ -1123,18 +1431,14 @@ contract TestBodaSavings is Test {
         assertEq(bps, (repaid * 10_000) / target);
     }
 
-    function testGetIdleLoanBalanceAndLockedPotTotal() public {
+    function testGetIdleLoanBalance() public {
         vm.prank(USER);
         bodaSavings.deposit(DEPOSIT_AMOUNT);
-
         assertEq(bodaSavings.getIdleLoanBalance(), DEPOSIT_AMOUNT / 2);
-        assertEq(bodaSavings.getLockedPotTotal(),  0);
 
-        vm.prank(USER);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-
+        _warpPastSettlement(USER);
+        bodaSavings.settleLoanRepayment(USER);
         assertEq(bodaSavings.getIdleLoanBalance(), 0);
-        assertEq(bodaSavings.getLockedPotTotal(),  DEPOSIT_AMOUNT / 2);
     }
 
     function testGetContractBalance() public {
@@ -1143,13 +1447,26 @@ contract TestBodaSavings is Test {
         assertEq(bodaSavings.getContractBalance(), DEPOSIT_AMOUNT);
     }
 
+    function testGetRepaymentHistoryRecordsSettlement() public {
+        vm.prank(USER);
+        bodaSavings.deposit(DEPOSIT_AMOUNT);
+        _warpPastSettlement(USER);
+        vm.prank(STRANGER);
+        bodaSavings.settleLoanRepayment(USER);
+
+        BodaBodaSavings.RepaymentRecord[] memory hist = bodaSavings.getRepaymentHistory(USER);
+        assertEq(hist.length,        1);
+        assertEq(hist[0].amount,     500e6);
+        assertTrue(hist[0].autoTriggered);              // settled by a third party
+    }
+
     function testIsVerifiedRiderReturnsFalseForStranger() public view {
         assertFalse(bodaSavings.isVerifiedRider(STRANGER));
     }
 
-    // ────────────────────────────────────────────────────────────────
-    //                     10. FUZZ TESTS
-    // ────────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════
+    //                     12. FUZZ TESTS
+    // ════════════════════════════════════════════════════════════════
 
     function testFuzzDepositSplitAlwaysSumsToTotal(uint256 amount) public {
         amount = bound(amount, 2, INITIAL_BALANCE);
@@ -1159,22 +1476,8 @@ contract TestBodaSavings is Test {
         vm.prank(USER);
         bodaSavings.deposit(amount);
 
-        (uint256 sav, uint256 loan,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(sav + loan, amount);
-    }
-
-    function testFuzzLockToPotNeverExceedsLoanBalance(uint256 lockAmount) public {
-        vm.prank(USER);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-
-        (, uint256 loanBal,,,,) = bodaSavings.getLoanStatus(USER);
-        lockAmount = bound(lockAmount, 1, loanBal);
-
-        vm.prank(USER);
-        bodaSavings.lockToPot(lockAmount, 0);
-
-        (,,,,,,,, uint256 potBal,,) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(potBal, lockAmount);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.savingsBalance + a.loanBalance, amount);
     }
 
     function testFuzzDepositWithPermitSplitSumsToTotal(uint256 amount) public {
@@ -1182,7 +1485,6 @@ contract TestBodaSavings is Test {
 
         vm.prank(USER);
         mockUSDC.approve(address(bodaSavings), 0);
-
         vm.prank(OWNER);
         mockUSDC.ownerMint(USER, amount);
 
@@ -1193,11 +1495,11 @@ contract TestBodaSavings is Test {
         vm.prank(USER);
         bodaSavings.depositWithPermit(amount, deadline, v, r, s);
 
-        (uint256 sav, uint256 loan,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(sav + loan, amount);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(a.savingsBalance + a.loanBalance, amount);
     }
 
-    function testFuzzTotalSavingsHeldTracksDeposits(uint256 amount) public {
+    function testFuzzTotalSavingsHeldTracksFirstDeposit(uint256 amount) public {
         amount = bound(amount, 2, INITIAL_BALANCE);
         vm.prank(OWNER);
         mockUSDC.ownerMint(USER, amount);
@@ -1205,25 +1507,97 @@ contract TestBodaSavings is Test {
         vm.prank(USER);
         bodaSavings.deposit(amount);
 
-        (uint256 sav,,,,,,,,,, ) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(bodaSavings.totalSavingsHeld(), sav);
+        BodaBodaSavings.RiderAnalyticsView memory a = _analytics(USER);
+        assertEq(bodaSavings.totalSavingsHeld(), a.savingsBalance);
     }
 
-    function testFuzzPotDeadlineSnapshotHoldsAfterCycleChange(uint256 newCycle) public {
-        newCycle = bound(newCycle, 1, 365 days);
-
-        vm.prank(USER);
-        bodaSavings.deposit(DEPOSIT_AMOUNT);
-
-        uint256 expectedDeadline = block.timestamp + 7 days;
-
-        vm.prank(USER);
-        bodaSavings.lockToPot(DEPOSIT_AMOUNT / 2, 0);
-
+    function testFuzzSettlementSweepsFullLoanBalance(uint256 amount) public {
+        // Bound so the loan portion never exceeds the target (no excess-to-savings).
+        amount = bound(amount, 2, LOAN_TARGET);
         vm.prank(OWNER);
-        bodaSavings.updateLenderCycle(LENDER_WEEKLY, newCycle);
+        mockUSDC.ownerMint(USER, amount);
 
-        (,,,,,,,,,, uint256 potDeadline) = bodaSavings.getRiderAnalytics(USER);
-        assertEq(potDeadline, expectedDeadline);
+        vm.prank(USER);
+        bodaSavings.deposit(amount);
+
+        uint256 loanBefore   = _analytics(USER).loanBalance;
+        _warpPastSettlement(USER);
+        uint256 lenderBefore = mockUSDC.balanceOf(LENDER_WEEKLY);
+
+        bodaSavings.settleLoanRepayment(USER);
+
+        assertEq(mockUSDC.balanceOf(LENDER_WEEKLY) - lenderBefore, loanBefore);
+        assertEq(_analytics(USER).loanBalance, 0);
     }
+
+    function testFuzzSolvencyInvariantHolds(uint256 amount) public {
+        amount = bound(amount, 2, INITIAL_BALANCE);
+        vm.prank(OWNER);
+        mockUSDC.ownerMint(USER, amount);
+
+        vm.prank(USER);
+        bodaSavings.deposit(amount);
+
+        assertTrue(bodaSavings.isSolvent());
+        assertGe(
+            bodaSavings.getContractBalance(),
+            bodaSavings.getTotalObligations()
+        );
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//                       TEST-ONLY HELPER TOKENS
+// ════════════════════════════════════════════════════════════════════
+
+/// @dev Minimal ERC20 that charges a 1% fee on every transfer, used to verify
+///      [SEC-B]: the contract credits the actual received delta, not the requested
+///      amount. Implements only what BodaBodaSavings.deposit() touches.
+contract FeeOnTransferToken {
+    string  public name     = "Fee";
+    string  public symbol   = "FEE";
+    uint256 public totalSupply;
+    uint256 public constant feeBps = 100; // 1%
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function decimals() external pure returns (uint8) { return 6; }
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+        totalSupply   += amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        _xfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 a = allowance[from][msg.sender];
+        require(a >= amount, "allowance");
+        if (a != type(uint256).max) allowance[from][msg.sender] = a - amount;
+        _xfer(from, to, amount);
+        return true;
+    }
+
+    function _xfer(address from, address to, uint256 amount) internal {
+        require(balanceOf[from] >= amount, "balance");
+        uint256 fee = (amount * feeBps) / 10_000;
+        balanceOf[from] -= amount;
+        balanceOf[to]   += amount - fee;
+        totalSupply     -= fee;                 // fee burned
+    }
+}
+
+/// @dev Minimal token reporting 18 decimals, used to verify the setStablecoin()
+///      decimals-parity guard [AUD-4]. Only decimals() is ever called on it.
+contract Decimals18Token {
+    function decimals() external pure returns (uint8) { return 18; }
 }

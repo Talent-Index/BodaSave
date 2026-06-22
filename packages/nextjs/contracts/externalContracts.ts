@@ -1,9 +1,16 @@
 import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
 
+// Canonical Base Sepolia (84532) v4.1 deployment.
+// IMPORTANT: if you redeploy, update BOTH addresses here AND re-run
+// setRelayer + ownerMint against the new BodaBodaSavings/MockUSDC pair,
+// and update BODASAVINGS_ADDRESS / MOCKUSDC_ADDRESS in packages/nextjs/.env.local
+// so the backend (chain.ts) targets the same contracts as the frontend.
+//
+// See packages/foundry/DEPLOYMENTS.md for the source of truth on these addresses.
 const externalContracts = {
   84532: {
     MockUSDC: {
-      address: "0xCB632653EF8d9642136796D576b868c4040bE3Be",
+      address: "0xBa3Dc4C8211676f642969F369C1c71c305E9fc85",
       abi: [
         {
           inputs: [
@@ -308,7 +315,7 @@ const externalContracts = {
       ] as const,
     },
     BodaBodaSavings: {
-      address: "0x407457843e3BcDd5476eD8075c4D4e74722DAAd9",
+      address: "0xb25fB889F6614A69Cbd950Dd4b6c4aDa55aBae55",
       abi: [
         {
           inputs: [
@@ -322,11 +329,10 @@ const externalContracts = {
           stateMutability: "nonpayable",
           type: "constructor",
         },
+        { inputs: [], name: "BodaBodaSavings__ArrayLengthMismatch", type: "error" },
         { inputs: [], name: "BodaBodaSavings__CannotRecoverStablecoin", type: "error" },
         { inputs: [], name: "BodaBodaSavings__ContractBalanceMustBeZero", type: "error" },
         { inputs: [], name: "BodaBodaSavings__DecimalsMismatch", type: "error" },
-        { inputs: [], name: "BodaBodaSavings__ExceedsAvailablePool", type: "error" },
-        { inputs: [], name: "BodaBodaSavings__InsufficientLoanBalance", type: "error" },
         { inputs: [], name: "BodaBodaSavings__InsufficientSavings", type: "error" },
         { inputs: [], name: "BodaBodaSavings__InvalidAge", type: "error" },
         { inputs: [], name: "BodaBodaSavings__InvalidCollectionCycle", type: "error" },
@@ -340,21 +346,20 @@ const externalContracts = {
         { inputs: [], name: "BodaBodaSavings__LenderNotActive", type: "error" },
         { inputs: [], name: "BodaBodaSavings__LenderNotFound", type: "error" },
         { inputs: [], name: "BodaBodaSavings__LicenseExpired", type: "error" },
-        { inputs: [], name: "BodaBodaSavings__LoanAlreadyCleared", type: "error" },
         { inputs: [], name: "BodaBodaSavings__NameRequired", type: "error" },
         { inputs: [], name: "BodaBodaSavings__NewTargetBelowRepaid", type: "error" },
         { inputs: [], name: "BodaBodaSavings__NoLendersProvided", type: "error" },
-        { inputs: [], name: "BodaBodaSavings__NoPotActive", type: "error" },
         { inputs: [], name: "BodaBodaSavings__NoWithdrawalPending", type: "error" },
         { inputs: [], name: "BodaBodaSavings__NoWithdrawalToCancel", type: "error" },
+        { inputs: [], name: "BodaBodaSavings__NotRelayer", type: "error" },
+        { inputs: [], name: "BodaBodaSavings__NothingReceived", type: "error" },
         { inputs: [], name: "BodaBodaSavings__OutstandingAccounting", type: "error" },
-        { inputs: [], name: "BodaBodaSavings__PotAlreadyActive", type: "error" },
-        { inputs: [], name: "BodaBodaSavings__PotDeadlineNotReached", type: "error" },
+        { inputs: [], name: "BodaBodaSavings__RelayerCannotBeZeroAddress", type: "error" },
         { inputs: [], name: "BodaBodaSavings__RiderAlreadyRegistered", type: "error" },
         { inputs: [], name: "BodaBodaSavings__RiderNotRegistered", type: "error" },
         { inputs: [], name: "BodaBodaSavings__RiderNotVerified", type: "error" },
+        { inputs: [], name: "BodaBodaSavings__SettlementNotDue", type: "error" },
         { inputs: [], name: "BodaBodaSavings__StablecoinCannotBeZeroAddress", type: "error" },
-        { inputs: [], name: "BodaBodaSavings__TransferFailed", type: "error" },
         { inputs: [], name: "BodaBodaSavings__WithdrawalAlreadyPending", type: "error" },
         { inputs: [], name: "BodaBodaSavings__WithdrawalDelayNotMet", type: "error" },
         { inputs: [], name: "BodaBodaSavings__WithdrawalNotApproved", type: "error" },
@@ -385,6 +390,15 @@ const externalContracts = {
         {
           anonymous: false,
           inputs: [
+            { indexed: false, internalType: "uint256", name: "oldThreshold", type: "uint256" },
+            { indexed: false, internalType: "uint256", name: "newThreshold", type: "uint256" },
+          ],
+          name: "AutoApprovalThresholdUpdated",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
             { indexed: true, internalType: "address", name: "rider", type: "address" },
             { indexed: false, internalType: "uint256", name: "totalAmount", type: "uint256" },
             { indexed: false, internalType: "uint256", name: "savingsPart", type: "uint256" },
@@ -392,6 +406,19 @@ const externalContracts = {
             { indexed: false, internalType: "uint256", name: "timestamp", type: "uint256" },
           ],
           name: "Deposit",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
+            { indexed: true, internalType: "address", name: "rider", type: "address" },
+            { indexed: true, internalType: "address", name: "relayer", type: "address" },
+            { indexed: false, internalType: "uint256", name: "totalAmount", type: "uint256" },
+            { indexed: false, internalType: "uint256", name: "savingsPart", type: "uint256" },
+            { indexed: false, internalType: "uint256", name: "loanPart", type: "uint256" },
+            { indexed: false, internalType: "uint256", name: "timestamp", type: "uint256" },
+          ],
+          name: "DepositCredited",
           type: "event",
         },
         {
@@ -450,10 +477,40 @@ const externalContracts = {
           anonymous: false,
           inputs: [
             { indexed: true, internalType: "address", name: "rider", type: "address" },
+            { indexed: false, internalType: "uint256", name: "excess", type: "uint256" },
+          ],
+          name: "LoanExcessToSavings",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
+            { indexed: true, internalType: "address", name: "rider", type: "address" },
+            { indexed: true, internalType: "address", name: "lender", type: "address" },
+            { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
+            { indexed: false, internalType: "uint256", name: "settledAt", type: "uint256" },
+            { indexed: false, internalType: "bool", name: "autoTriggered", type: "bool" },
+          ],
+          name: "LoanRepaymentSettled",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
+            { indexed: true, internalType: "address", name: "rider", type: "address" },
             { indexed: false, internalType: "uint256", name: "oldTarget", type: "uint256" },
             { indexed: false, internalType: "uint256", name: "newTarget", type: "uint256" },
           ],
           name: "LoanTargetUpdated",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
+            { indexed: true, internalType: "address", name: "previousOwner", type: "address" },
+            { indexed: true, internalType: "address", name: "newOwner", type: "address" },
+          ],
+          name: "OwnershipTransferStarted",
           type: "event",
         },
         {
@@ -474,42 +531,10 @@ const externalContracts = {
         {
           anonymous: false,
           inputs: [
-            { indexed: true, internalType: "address", name: "rider", type: "address" },
-            { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
-            { indexed: false, internalType: "uint256", name: "settledAt", type: "uint256" },
+            { indexed: true, internalType: "address", name: "oldRelayer", type: "address" },
+            { indexed: true, internalType: "address", name: "newRelayer", type: "address" },
           ],
-          name: "PotAutoSettled",
-          type: "event",
-        },
-        {
-          anonymous: false,
-          inputs: [
-            { indexed: true, internalType: "address", name: "rider", type: "address" },
-            { indexed: false, internalType: "uint256", name: "excess", type: "uint256" },
-          ],
-          name: "PotExcessReturned",
-          type: "event",
-        },
-        {
-          anonymous: false,
-          inputs: [
-            { indexed: true, internalType: "address", name: "rider", type: "address" },
-            { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
-            { indexed: false, internalType: "uint256", name: "lockedAt", type: "uint256" },
-            { indexed: false, internalType: "uint256", name: "intendedPayAt", type: "uint256" },
-            { indexed: false, internalType: "uint256", name: "autoDeadline", type: "uint256" },
-          ],
-          name: "PotLocked",
-          type: "event",
-        },
-        {
-          anonymous: false,
-          inputs: [
-            { indexed: true, internalType: "address", name: "rider", type: "address" },
-            { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
-            { indexed: false, internalType: "uint256", name: "releasedAt", type: "uint256" },
-          ],
-          name: "PotReleasedByRider",
+          name: "RelayerUpdated",
           type: "event",
         },
         {
@@ -532,6 +557,16 @@ const externalContracts = {
             { indexed: false, internalType: "enum BodaBodaSavings.SplitRatio", name: "splitRatio", type: "uint8" },
           ],
           name: "RiderRegistered",
+          type: "event",
+        },
+        {
+          anonymous: false,
+          inputs: [
+            { indexed: true, internalType: "address", name: "rider", type: "address" },
+            { indexed: false, internalType: "enum BodaBodaSavings.SplitRatio", name: "oldRatio", type: "uint8" },
+            { indexed: false, internalType: "enum BodaBodaSavings.SplitRatio", name: "newRatio", type: "uint8" },
+          ],
+          name: "SplitRatioUpdated",
           type: "event",
         },
         {
@@ -596,6 +631,7 @@ const externalContracts = {
             { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
             { indexed: false, internalType: "bytes32", name: "category", type: "bytes32" },
             { indexed: false, internalType: "uint256", name: "requestedAt", type: "uint256" },
+            { indexed: false, internalType: "bool", name: "autoApproved", type: "bool" },
           ],
           name: "WithdrawalRequested",
           type: "event",
@@ -677,6 +713,7 @@ const externalContracts = {
           stateMutability: "view",
           type: "function",
         },
+        { inputs: [], name: "acceptOwnership", outputs: [], stateMutability: "nonpayable", type: "function" },
         {
           inputs: [
             { internalType: "address", name: "_lenderAddress", type: "address" },
@@ -696,8 +733,25 @@ const externalContracts = {
           stateMutability: "nonpayable",
           type: "function",
         },
+        {
+          inputs: [],
+          name: "autoApprovalThreshold",
+          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+          stateMutability: "view",
+          type: "function",
+        },
         { inputs: [], name: "cancelWithdrawal", outputs: [], stateMutability: "nonpayable", type: "function" },
         { inputs: [], name: "claimWithdrawal", outputs: [], stateMutability: "nonpayable", type: "function" },
+        {
+          inputs: [
+            { internalType: "address", name: "_rider", type: "address" },
+            { internalType: "uint256", name: "amount", type: "uint256" },
+          ],
+          name: "creditDeposit",
+          outputs: [],
+          stateMutability: "nonpayable",
+          type: "function",
+        },
         {
           inputs: [{ internalType: "address", name: "_lenderAddress", type: "address" }],
           name: "deactivateLender",
@@ -791,24 +845,23 @@ const externalContracts = {
           type: "function",
         },
         {
-          inputs: [],
-          name: "getLockedPotTotal",
+          inputs: [{ internalType: "address", name: "_rider", type: "address" }],
+          name: "getNextSettlementDue",
           outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
           stateMutability: "view",
           type: "function",
         },
         {
           inputs: [{ internalType: "address", name: "_rider", type: "address" }],
-          name: "getPotHistory",
+          name: "getRepaymentHistory",
           outputs: [
             {
               components: [
                 { internalType: "uint256", name: "amount", type: "uint256" },
-                { internalType: "uint256", name: "lockedAt", type: "uint256" },
                 { internalType: "uint256", name: "settledAt", type: "uint256" },
-                { internalType: "bool", name: "autoSettled", type: "bool" },
+                { internalType: "bool", name: "autoTriggered", type: "bool" },
               ],
-              internalType: "struct BodaBodaSavings.PotRecord[]",
+              internalType: "struct BodaBodaSavings.RepaymentRecord[]",
               name: "",
               type: "tuple[]",
             },
@@ -818,19 +871,57 @@ const externalContracts = {
         },
         {
           inputs: [{ internalType: "address", name: "_rider", type: "address" }],
+          name: "getRider",
+          outputs: [
+            {
+              components: [
+                { internalType: "string", name: "name", type: "string" },
+                { internalType: "bytes1", name: "gender", type: "bytes1" },
+                { internalType: "address", name: "lenderAddress", type: "address" },
+                { internalType: "enum BodaBodaSavings.SplitRatio", name: "splitRatio", type: "uint8" },
+                { internalType: "uint256", name: "loanTarget", type: "uint256" },
+                { internalType: "uint256", name: "loanBalance", type: "uint256" },
+                { internalType: "uint256", name: "loanRepaid", type: "uint256" },
+                { internalType: "uint256", name: "savingsBalance", type: "uint256" },
+                { internalType: "uint256", name: "totalDeposited", type: "uint256" },
+                { internalType: "uint256", name: "totalWithdrawn", type: "uint256" },
+                { internalType: "uint256", name: "withdrawalCount", type: "uint256" },
+                { internalType: "uint256", name: "lastDepositAt", type: "uint256" },
+                { internalType: "uint256", name: "firstDepositAt", type: "uint256" },
+                { internalType: "uint256", name: "lastSettledAt", type: "uint256" },
+                { internalType: "uint256", name: "savingsRemainder", type: "uint256" },
+                { internalType: "uint8", name: "age", type: "uint8" },
+                { internalType: "bool", name: "registered", type: "bool" },
+              ],
+              internalType: "struct BodaBodaSavings.Rider",
+              name: "",
+              type: "tuple",
+            },
+          ],
+          stateMutability: "view",
+          type: "function",
+        },
+        {
+          inputs: [{ internalType: "address", name: "_rider", type: "address" }],
           name: "getRiderAnalytics",
           outputs: [
-            { internalType: "uint256", name: "savingsBalance", type: "uint256" },
-            { internalType: "uint256", name: "loanBalance", type: "uint256" },
-            { internalType: "uint256", name: "totalDeposited", type: "uint256" },
-            { internalType: "uint256", name: "totalWithdrawn", type: "uint256" },
-            { internalType: "uint256", name: "withdrawalCount", type: "uint256" },
-            { internalType: "uint256", name: "lastDepositAt", type: "uint256" },
-            { internalType: "uint256", name: "firstDepositAt", type: "uint256" },
-            { internalType: "bool", name: "potActive", type: "bool" },
-            { internalType: "uint256", name: "potBalance", type: "uint256" },
-            { internalType: "uint256", name: "potLockedAt", type: "uint256" },
-            { internalType: "uint256", name: "potDeadline", type: "uint256" },
+            {
+              components: [
+                { internalType: "uint256", name: "savingsBalance", type: "uint256" },
+                { internalType: "uint256", name: "loanBalance", type: "uint256" },
+                { internalType: "uint256", name: "totalDeposited", type: "uint256" },
+                { internalType: "uint256", name: "totalWithdrawn", type: "uint256" },
+                { internalType: "uint256", name: "withdrawalCount", type: "uint256" },
+                { internalType: "uint256", name: "lastDepositAt", type: "uint256" },
+                { internalType: "uint256", name: "firstDepositAt", type: "uint256" },
+                { internalType: "uint256", name: "loanRepaid", type: "uint256" },
+                { internalType: "uint256", name: "lastSettledAt", type: "uint256" },
+                { internalType: "uint256", name: "nextSettlementDue", type: "uint256" },
+              ],
+              internalType: "struct BodaBodaSavings.RiderAnalyticsView",
+              name: "a",
+              type: "tuple",
+            },
           ],
           stateMutability: "view",
           type: "function",
@@ -853,16 +944,30 @@ const externalContracts = {
           inputs: [{ internalType: "address", name: "_rider", type: "address" }],
           name: "getRiderProfile",
           outputs: [
-            { internalType: "string", name: "name", type: "string" },
-            { internalType: "uint8", name: "age", type: "uint8" },
-            { internalType: "bytes1", name: "gender", type: "bytes1" },
-            { internalType: "bool", name: "registered", type: "bool" },
-            { internalType: "address", name: "lenderAddress", type: "address" },
-            { internalType: "string", name: "lenderName", type: "string" },
-            { internalType: "enum BodaBodaSavings.RepaymentSchedule", name: "lenderSchedule", type: "uint8" },
-            { internalType: "enum BodaBodaSavings.SplitRatio", name: "splitRatio", type: "uint8" },
-            { internalType: "uint256", name: "loanTarget", type: "uint256" },
+            {
+              components: [
+                { internalType: "string", name: "name", type: "string" },
+                { internalType: "uint8", name: "age", type: "uint8" },
+                { internalType: "bytes1", name: "gender", type: "bytes1" },
+                { internalType: "bool", name: "registered", type: "bool" },
+                { internalType: "address", name: "lenderAddress", type: "address" },
+                { internalType: "string", name: "lenderName", type: "string" },
+                { internalType: "enum BodaBodaSavings.RepaymentSchedule", name: "lenderSchedule", type: "uint8" },
+                { internalType: "enum BodaBodaSavings.SplitRatio", name: "splitRatio", type: "uint8" },
+                { internalType: "uint256", name: "loanTarget", type: "uint256" },
+              ],
+              internalType: "struct BodaBodaSavings.RiderProfileView",
+              name: "p",
+              type: "tuple",
+            },
           ],
+          stateMutability: "view",
+          type: "function",
+        },
+        {
+          inputs: [],
+          name: "getTotalObligations",
+          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
           stateMutability: "view",
           type: "function",
         },
@@ -901,6 +1006,20 @@ const externalContracts = {
         },
         {
           inputs: [{ internalType: "address", name: "_rider", type: "address" }],
+          name: "isSettlementDue",
+          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+          stateMutability: "view",
+          type: "function",
+        },
+        {
+          inputs: [],
+          name: "isSolvent",
+          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+          stateMutability: "view",
+          type: "function",
+        },
+        {
+          inputs: [{ internalType: "address", name: "_rider", type: "address" }],
           name: "isVerifiedRider",
           outputs: [{ internalType: "bool", name: "", type: "bool" }],
           stateMutability: "view",
@@ -928,16 +1047,6 @@ const externalContracts = {
           type: "function",
         },
         {
-          inputs: [
-            { internalType: "uint256", name: "amount", type: "uint256" },
-            { internalType: "uint256", name: "intendedPayAt", type: "uint256" },
-          ],
-          name: "lockToPot",
-          outputs: [],
-          stateMutability: "nonpayable",
-          type: "function",
-        },
-        {
           inputs: [],
           name: "owner",
           outputs: [{ internalType: "address", name: "", type: "address" }],
@@ -949,6 +1058,13 @@ const externalContracts = {
           inputs: [],
           name: "paused",
           outputs: [{ internalType: "bool", name: "", type: "bool" }],
+          stateMutability: "view",
+          type: "function",
+        },
+        {
+          inputs: [],
+          name: "pendingOwner",
+          outputs: [{ internalType: "address", name: "", type: "address" }],
           stateMutability: "view",
           type: "function",
         },
@@ -988,7 +1104,13 @@ const externalContracts = {
           stateMutability: "nonpayable",
           type: "function",
         },
-        { inputs: [], name: "releaseFromPot", outputs: [], stateMutability: "nonpayable", type: "function" },
+        {
+          inputs: [],
+          name: "relayer",
+          outputs: [{ internalType: "address", name: "", type: "address" }],
+          stateMutability: "view",
+          type: "function",
+        },
         { inputs: [], name: "renounceOwnership", outputs: [], stateMutability: "nonpayable", type: "function" },
         {
           inputs: [
@@ -1022,30 +1144,17 @@ const externalContracts = {
           type: "function",
         },
         {
-          inputs: [{ internalType: "address", name: "", type: "address" }],
-          name: "riders",
-          outputs: [
-            { internalType: "string", name: "name", type: "string" },
-            { internalType: "bytes1", name: "gender", type: "bytes1" },
-            { internalType: "address", name: "lenderAddress", type: "address" },
-            { internalType: "enum BodaBodaSavings.SplitRatio", name: "splitRatio", type: "uint8" },
-            { internalType: "uint256", name: "loanTarget", type: "uint256" },
-            { internalType: "uint256", name: "loanBalance", type: "uint256" },
-            { internalType: "uint256", name: "loanRepaid", type: "uint256" },
-            { internalType: "uint256", name: "savingsBalance", type: "uint256" },
-            { internalType: "uint256", name: "totalDeposited", type: "uint256" },
-            { internalType: "uint256", name: "totalWithdrawn", type: "uint256" },
-            { internalType: "uint256", name: "withdrawalCount", type: "uint256" },
-            { internalType: "uint256", name: "lastDepositAt", type: "uint256" },
-            { internalType: "uint256", name: "firstDepositAt", type: "uint256" },
-            { internalType: "uint256", name: "potBalance", type: "uint256" },
-            { internalType: "uint256", name: "potLockedAt", type: "uint256" },
-            { internalType: "uint256", name: "potDeadline", type: "uint256" },
-            { internalType: "uint8", name: "age", type: "uint8" },
-            { internalType: "bool", name: "potActive", type: "bool" },
-            { internalType: "bool", name: "registered", type: "bool" },
-          ],
-          stateMutability: "view",
+          inputs: [{ internalType: "uint256", name: "_threshold", type: "uint256" }],
+          name: "setAutoApprovalThreshold",
+          outputs: [],
+          stateMutability: "nonpayable",
+          type: "function",
+        },
+        {
+          inputs: [{ internalType: "address", name: "_relayer", type: "address" }],
+          name: "setRelayer",
+          outputs: [],
+          stateMutability: "nonpayable",
           type: "function",
         },
         {
@@ -1057,7 +1166,7 @@ const externalContracts = {
         },
         {
           inputs: [{ internalType: "address", name: "_rider", type: "address" }],
-          name: "settleExpiredPot",
+          name: "settleLoanRepayment",
           outputs: [],
           stateMutability: "nonpayable",
           type: "function",
@@ -1071,13 +1180,6 @@ const externalContracts = {
         },
         {
           inputs: [],
-          name: "totalLoanCredits",
-          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-          stateMutability: "view",
-          type: "function",
-        },
-        {
-          inputs: [],
           name: "totalLoanSettled",
           outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
           stateMutability: "view",
@@ -1085,14 +1187,14 @@ const externalContracts = {
         },
         {
           inputs: [],
-          name: "totalLockedInPots",
+          name: "totalSavingsHeld",
           outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
           stateMutability: "view",
           type: "function",
         },
         {
           inputs: [],
-          name: "totalSavingsHeld",
+          name: "totalUnsettledLoanBalance",
           outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
           stateMutability: "view",
           type: "function",
@@ -1134,6 +1236,13 @@ const externalContracts = {
             { internalType: "bytes32", name: "_kycProvider", type: "bytes32" },
           ],
           name: "updateRiderKYC",
+          outputs: [],
+          stateMutability: "nonpayable",
+          type: "function",
+        },
+        {
+          inputs: [{ internalType: "enum BodaBodaSavings.SplitRatio", name: "_newRatio", type: "uint8" }],
+          name: "updateSplitRatio",
           outputs: [],
           stateMutability: "nonpayable",
           type: "function",

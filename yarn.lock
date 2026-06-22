@@ -3876,6 +3876,7 @@ __metadata:
     eslint-config-next: ~15.2.3
     eslint-config-prettier: ~10.1.1
     eslint-plugin-prettier: ~5.2.4
+    intasend-node: ^1.1.2
     kubo-rpc-client: ~5.0.2
     next: ~15.2.3
     next-nprogress-bar: ~2.3.13
@@ -3891,7 +3892,7 @@ __metadata:
     typescript: ~5.8.2
     usehooks-ts: ~3.1.0
     vercel: ~39.1.3
-    viem: 2.34.0
+    viem: ^2.52.2
     wagmi: 2.16.4
     zustand: ~5.0.0
   languageName: unknown
@@ -10054,6 +10055,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"intasend-node@npm:^1.1.2":
+  version: 1.1.2
+  resolution: "intasend-node@npm:1.1.2"
+  checksum: b71ab66dd7d992806fc083c75ab8436fa230401bcdf2a4d2c64dcb0b1cb170e934fc30eb7bcd43a965ce0d699dd60ca7bb7a5b3e8a1f8d95be33468d40e76c71
+  languageName: node
+  linkType: hard
+
 "interface-blockstore@npm:^5.3.2":
   version: 5.3.2
   resolution: "interface-blockstore@npm:5.3.2"
@@ -12757,6 +12765,27 @@ __metadata:
     typescript:
       optional: true
   checksum: b1b7d023bb98cdfa4be61f67a8fcd93051b82fbd9d86990df5740f336e58a883a913ebd9b6384e04296f6ba12e44761170c5f86061582bf3fd5fe7598ad1f3bf
+  languageName: node
+  linkType: hard
+
+"ox@npm:0.14.29":
+  version: 0.14.29
+  resolution: "ox@npm:0.14.29"
+  dependencies:
+    "@adraffy/ens-normalize": ^1.11.0
+    "@noble/ciphers": ^1.3.0
+    "@noble/curves": 1.9.1
+    "@noble/hashes": ^1.8.0
+    "@scure/bip32": ^1.7.0
+    "@scure/bip39": ^1.6.0
+    abitype: ^1.2.3
+    eventemitter3: 5.0.1
+  peerDependencies:
+    typescript: ">=5.4.0"
+  peerDependenciesMeta:
+    typescript:
+      optional: true
+  checksum: b9c45b424411afa2f762a63cadab3ecebf3a9cc5bef673b36d1f59ba847894e6c61fc283acab71a47d950d88ad8ba5818faccf46176bcea4c8a66a50b8fac791
   languageName: node
   linkType: hard
 
@@ -16298,6 +16327,27 @@ __metadata:
     typescript:
       optional: true
   checksum: fe036a787752fb90b454f4bdb986eb4826a18bbac97e9b2a126f1aa79f7070cd6f9be5a3d2b91453627d2e86274c289e78a4d3a6792873e20eefdbceece3e34a
+  languageName: node
+  linkType: hard
+
+"viem@npm:^2.52.2":
+  version: 2.52.2
+  resolution: "viem@npm:2.52.2"
+  dependencies:
+    "@noble/curves": 1.9.1
+    "@noble/hashes": 1.8.0
+    "@scure/bip32": 1.7.0
+    "@scure/bip39": 1.6.0
+    abitype: 1.2.3
+    isows: 1.0.7
+    ox: 0.14.29
+    ws: 8.20.1
+  peerDependencies:
+    typescript: ">=5.0.4"
+  peerDependenciesMeta:
+    typescript:
+      optional: true
+  checksum: f06cf6e13a504111a721475db4389df5447962faf4fb7c21dc04b5e5153a1294e5cae44c8b8ed5b9c9540a0f9f0a38cbb9fbf289f9cb8224832efd0860519eaf
   languageName: node
   linkType: hard
 
